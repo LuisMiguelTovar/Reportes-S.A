@@ -534,11 +534,11 @@ export default function DespachoTableClient() {
 
       {/* Tabla de Despacho */}
       <div className="bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden p-6 mt-6">
-        <div className="w-full overflow-x-auto">
+        <div className="w-full">
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className="bg-gray-50 border-b border-gray-200 text-xs uppercase text-gray-500 font-semibold tracking-wider">
-                <th className="py-3 px-4">
+                <th className="py-2 px-3">
                   <input
                     type="checkbox"
                     className="rounded"
@@ -546,18 +546,18 @@ export default function DespachoTableClient() {
                     onChange={handleSelectAll}
                   />
                 </th>
-                <th className="py-3 px-4 whitespace-nowrap">Orden</th>
-                <th className="py-3 px-4 whitespace-nowrap">Contrato</th>
-                <th className="py-3 px-4 min-w-[200px]">Dirección</th>
-                <th className="py-3 px-4 min-w-[200px]">Barrio</th>
-                <th className="py-3 px-4 whitespace-nowrap">Localidad</th>
-                <th className="py-3 px-4 min-w-[200px]">Descripción del Trabajo</th>
-                <th className="py-3 px-4 whitespace-nowrap">Días / SLA</th>
-                <th className="py-3 px-4 whitespace-nowrap">Técnico Asignado</th>
-                <th className="py-3 px-4 text-center whitespace-nowrap">Acciones</th>
+                <th className="py-2 px-3">Orden</th>
+                <th className="py-2 px-3">Contrato</th>
+                <th className="py-2 px-3">Dirección</th>
+                <th className="py-2 px-3">Barrio</th>
+                <th className="py-2 px-3">Localidad</th>
+                <th className="py-2 px-3">Descripción del Trabajo</th>
+                <th className="py-2 px-3">Días / SLA</th>
+                <th className="py-2 px-3">Técnico Asignado</th>
+                <th className="py-2 px-3 text-center">Acciones</th>
               </tr>
             </thead>
-            <tbody className="text-sm text-gray-700">
+            <tbody className="text-xs text-gray-700">
               {filteredData.length === 0 ? (
                 <tr>
                   <td colSpan={10} className="p-8 text-center text-gray-500">
@@ -567,7 +567,7 @@ export default function DespachoTableClient() {
               ) : (
                 filteredData.map((row) => (
                   <tr key={row.orden_trabajo} className="border-b border-gray-100 hover:bg-gray-50 transition-colors">
-                    <td className="py-3 px-4">
+                    <td className="py-2 px-3">
                       <input
                         type="checkbox"
                         className="rounded"
@@ -575,26 +575,26 @@ export default function DespachoTableClient() {
                         onChange={(e) => handleSelectOne(row.orden_trabajo, e.target.checked)}
                       />
                     </td>
-                    <td className="py-3 px-4 whitespace-nowrap font-medium text-gray-900">{row.orden_trabajo}</td>
-                    <td className="py-3 px-4 whitespace-nowrap">{row.contrato}</td>
-                    <td className="py-3 px-4 min-w-[200px] max-w-[300px] truncate" title={row.direccion}>{row.direccion}</td>
-                    <td className="py-3 px-4 min-w-[200px] max-w-[300px] truncate" title={row.barrio || '-'}>{row.barrio || '-'}</td>
-                    <td className="py-3 px-4 whitespace-nowrap">{row.localidad}</td>
-                    <td className="py-3 px-4 text-sm text-gray-500 truncate min-w-[200px] max-w-[300px]" title={row.descripcion_del_trabajo || ''}>
+                    <td className="py-2 px-3 font-medium text-gray-900">{row.orden_trabajo}</td>
+                    <td className="py-2 px-3">{row.contrato}</td>
+                    <td className="py-2 px-3 max-w-[180px] truncate" title={row.direccion}>{row.direccion}</td>
+                    <td className="py-2 px-3 max-w-[180px] truncate" title={row.barrio || '-'}>{row.barrio || '-'}</td>
+                    <td className="py-2 px-3">{row.localidad}</td>
+                    <td className="py-2 px-3 max-w-[180px] truncate text-gray-500" title={row.descripcion_del_trabajo || ''}>
                       {row.descripcion_del_trabajo || '-'}
                     </td>
-                    <td className="py-3 px-4 whitespace-nowrap">
+                    <td className="py-2 px-3">
                       {(() => {
                         const daysSLA = calcularDiasSLA(row.fecha_asignacion_ot);
                         const slaColor = daysSLA >= 3 ? 'bg-red-100 text-red-800' : daysSLA === 2 ? 'bg-orange-100 text-orange-800' : 'bg-green-100 text-green-800';
                         return (
-                          <span className={`inline-block px-2 py-1 rounded text-xs font-semibold whitespace-nowrap ${slaColor}`}>
+                          <span className={`inline-block px-2 py-1 rounded text-xs font-semibold ${slaColor}`}>
                             {daysSLA} {daysSLA === 1 ? 'día' : 'días'}
                           </span>
                         );
                       })()}
                     </td>
-                    <td className="py-3 px-4 whitespace-nowrap">
+                    <td className="py-2 px-3">
                       {(() => {
                         const nombre = getTecnicoNombre(row.id_tecnico_asignado as string);
                         return nombre ? (
@@ -604,7 +604,7 @@ export default function DespachoTableClient() {
                         );
                       })()}
                     </td>
-                    <td className="py-3 px-4 text-center whitespace-nowrap">
+                    <td className="py-2 px-3 text-center">
                       <button
                         onClick={(e) => {
                           if (openMenuId === row.orden_trabajo) {

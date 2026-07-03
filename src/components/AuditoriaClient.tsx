@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import * as XLSX from 'xlsx';
 import UserProfile from '@/components/UserProfile';
@@ -42,6 +42,22 @@ export default function AuditoriaClient({ initialData, error }: { initialData: O
 
   const [tecnicos, setTecnicos] = useState<Tecnico[]>([]);
   const router = useRouter();
+
+  // ── Estado para el menú kebab de acciones ──
+  const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+  const [menuPosition, setMenuPosition] = useState<{ top: number; left: number } | null>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setOpenMenuId(null);
+        setMenuPosition(null);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   useEffect(() => {
     const fetchTecnicos = async () => {
@@ -334,11 +350,11 @@ export default function AuditoriaClient({ initialData, error }: { initialData: O
       </div>
 
       <div className="bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden">
-        <div className="w-full overflow-x-auto">
+        <div className="w-full">
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className="bg-gray-50 border-b border-gray-200 text-xs uppercase text-gray-500 font-semibold tracking-wider">
-                <th className="py-3 px-4 w-12 text-center">
+                <th className="py-2 px-3 w-12 text-center">
                   <input
                     type="checkbox"
                     className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer h-4 w-4"
@@ -346,17 +362,17 @@ export default function AuditoriaClient({ initialData, error }: { initialData: O
                     onChange={handleSelectAll}
                   />
                 </th>
-                <th className="py-3 px-4 whitespace-nowrap">Fecha de Cierre</th>
-                <th className="py-3 px-4 whitespace-nowrap">Nº Orden</th>
-                <th className="py-3 px-4 whitespace-nowrap">Contrato</th>
-                <th className="py-3 px-4 min-w-[200px]">Dirección</th>
-                <th className="py-3 px-4 min-w-[200px]">Barrio</th>
-                <th className="py-3 px-4 whitespace-nowrap">Estado</th>
-                <th className="py-3 px-4 whitespace-nowrap">Técnico</th>
-                <th className="py-3 px-4 whitespace-nowrap">Acciones</th>
+                <th className="py-2 px-3">Fecha de Cierre</th>
+                <th className="py-2 px-3">Nº Orden</th>
+                <th className="py-2 px-3">Contrato</th>
+                <th className="py-2 px-3">Dirección</th>
+                <th className="py-2 px-3">Barrio</th>
+                <th className="py-2 px-3">Estado</th>
+                <th className="py-2 px-3">Técnico</th>
+                <th className="py-2 px-3 text-center">Acciones</th>
               </tr>
             </thead>
-            <tbody className="text-sm text-gray-700">
+            <tbody className="text-xs text-gray-700">
               {dataOrdenada.length === 0 ? (
                 <tr>
                   <td colSpan={9} className="py-8 px-6 text-center text-gray-500">
@@ -366,7 +382,7 @@ export default function AuditoriaClient({ initialData, error }: { initialData: O
               ) : (
                 dataOrdenada.map((row) => (
                     <tr key={row.orden_trabajo} className="border-b border-gray-100 hover:bg-gray-50 transition-colors">
-                      <td className="py-3 px-4 text-center whitespace-nowrap">
+                      <td className="py-2 px-3 text-center">
                         <input
                           type="checkbox"
                           className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer h-4 w-4"
@@ -374,7 +390,7 @@ export default function AuditoriaClient({ initialData, error }: { initialData: O
                           onChange={() => handleSelectOne(row.orden_trabajo)}
                         />
                       </td>
-                      <td className="py-3 px-4 text-gray-900 whitespace-nowrap">
+                      <td className="py-2 px-3 text-gray-900">
                         {row.fecha_cierre ? new Date(row.fecha_cierre).toLocaleString('es-CO', {
                           timeZone: 'America/Bogota',
                           day: '2-digit',
@@ -385,42 +401,77 @@ export default function AuditoriaClient({ initialData, error }: { initialData: O
                           hour12: true
                         }) : 'Sin fecha'}
                       </td>
-                      <td className="py-3 px-4 font-medium text-gray-900 whitespace-nowrap">{row.orden_trabajo}</td>
-                      <td className="py-3 px-4 text-gray-500 whitespace-nowrap">{row.contrato}</td>
-                      <td className="py-3 px-4 text-gray-500 min-w-[200px] max-w-[300px] truncate" title={row.direccion || '-'}>{row.direccion || '-'}</td>
-                      <td className="py-3 px-4 text-gray-500 min-w-[200px] max-w-[300px] truncate" title={row.barrio || '-'}>{row.barrio || '-'}</td>
-                      <td className="py-3 px-4 whitespace-nowrap">
-                        <span className={`px-3 py-1 rounded-full text-xs font-semibold ${row.estado === 'Cancelada' ? 'bg-red-50 text-red-700 border border-red-200' : 'bg-green-50 text-green-700 border border-green-200'}`}>
+                      <td className="py-2 px-3 font-medium text-gray-900">{row.orden_trabajo}</td>
+                      <td className="py-2 px-3 text-gray-500">{row.contrato}</td>
+                      <td className="py-2 px-3 text-gray-500 max-w-[180px] truncate" title={row.direccion || '-'}>{row.direccion || '-'}</td>
+                      <td className="py-2 px-3 text-gray-500 max-w-[180px] truncate" title={row.barrio || '-'}>{row.barrio || '-'}</td>
+                      <td className="py-2 px-3">
+                        <span className={`px-2 py-1 rounded-full text-xs font-semibold ${row.estado === 'Cancelada' ? 'bg-red-50 text-red-700 border border-red-200' : 'bg-green-50 text-green-700 border border-green-200'}`}>
                           {row.estado}
                         </span>
                       </td>
-                      <td className="py-3 px-4 text-gray-600 whitespace-nowrap">{getTecnicoNombre(row.id_tecnico_asignado)}</td>
-                      <td className="py-3 px-4 whitespace-nowrap">
-                        <div className="flex items-center gap-2">
-                          {row.urls_fotos && row.urls_fotos.length > 0 ? (
-                            <button
-                              onClick={() => setEvidenciasModal(row.urls_fotos!)}
-                              className="text-purple-600 hover:text-purple-800 font-semibold flex items-center gap-1 text-sm bg-purple-50 hover:bg-purple-100 px-2 py-1 rounded-md transition-colors w-fit"
-                            >
-                              📸 Evidencias
-                            </button>
-                          ) : (
-                            <span className="text-gray-400 text-xs italic">Sin evidencias</span>
-                          )}
-                          <button
-                            onClick={() => handleReabrirOrden(row.orden_trabajo)}
-                            disabled={isReopening === row.orden_trabajo}
-                            className="text-amber-600 hover:text-amber-800 font-semibold flex items-center gap-1 text-sm bg-amber-50 hover:bg-amber-100 px-2 py-1 rounded-md transition-colors w-fit disabled:opacity-50"
-                            title="Reabrir orden (vuelve a Pendiente)"
+                      <td className="py-2 px-3 text-gray-600">{getTecnicoNombre(row.id_tecnico_asignado)}</td>
+                      <td className="py-2 px-3 text-center">
+                        <button
+                          onClick={(e) => {
+                            if (openMenuId === row.orden_trabajo) {
+                              setOpenMenuId(null);
+                              setMenuPosition(null);
+                            } else {
+                              const rect = e.currentTarget.getBoundingClientRect();
+                              const alturaMenuEstimada = 100;
+                              const espacioAbajo = window.innerHeight - rect.bottom;
+                              const top = espacioAbajo < alturaMenuEstimada
+                                ? rect.top + window.scrollY - alturaMenuEstimada - 4
+                                : rect.bottom + window.scrollY + 4;
+                              setMenuPosition({
+                                top,
+                                left: rect.right + window.scrollX - 224,
+                              });
+                              setOpenMenuId(row.orden_trabajo);
+                            }
+                          }}
+                          className="text-gray-400 hover:text-gray-700 hover:bg-gray-100 p-1.5 rounded-lg transition-colors"
+                          title="Acciones"
+                        >
+                          <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                            <circle cx="10" cy="4" r="1.5" />
+                            <circle cx="10" cy="10" r="1.5" />
+                            <circle cx="10" cy="16" r="1.5" />
+                          </svg>
+                        </button>
+                        {openMenuId === row.orden_trabajo && menuPosition && (
+                          <div
+                            ref={menuRef}
+                            style={{ position: 'fixed', top: menuPosition.top, left: menuPosition.left }}
+                            className="w-56 bg-white rounded-lg shadow-lg border border-gray-200 z-50 py-1 text-left"
                           >
-                            {isReopening === row.orden_trabajo ? (
-                              <svg className="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+                            {row.urls_fotos && row.urls_fotos.length > 0 ? (
+                              <button
+                                className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-purple-700 hover:bg-purple-50 transition-colors"
+                                onClick={() => { setEvidenciasModal(row.urls_fotos!); setOpenMenuId(null); setMenuPosition(null); }}
+                              >
+                                📸 Ver Evidencias
+                              </button>
                             ) : (
-                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+                              <div className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-gray-400 italic">
+                                Sin evidencias
+                              </div>
                             )}
-                            Reabrir
-                          </button>
-                        </div>
+                            <button
+                              className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-amber-600 hover:bg-amber-50 transition-colors disabled:opacity-50"
+                              onClick={() => { handleReabrirOrden(row.orden_trabajo); setOpenMenuId(null); setMenuPosition(null); }}
+                              disabled={isReopening === row.orden_trabajo}
+                            >
+                              {isReopening === row.orden_trabajo ? (
+                                <svg className="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+                              ) : (
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+                              )}
+                              Reabrir orden
+                            </button>
+                          </div>
+                        )}
                       </td>
                     </tr>
                 ))
