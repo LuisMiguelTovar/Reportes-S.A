@@ -11,6 +11,8 @@ type Orden = {
   estado: string;
   localidad?: string;
   id_tecnico_asignado?: string;
+  contrato?: string;
+  fecha_asignacion_ot?: string;
   [key: string]: any;
 };
 
@@ -19,16 +21,19 @@ type Perfil = {
   nombre: string;
 };
 
-export default function DashboardClient({ 
-  initialOrdenes, 
+export default function DashboardClient({
+  ordenesActivas: initialActivas,
+  completadasHoy,
   perfiles,
-  error 
-}: { 
-  initialOrdenes: Orden[], 
-  perfiles: Perfil[],
-  error: any
+  error
+}: {
+  ordenesActivas: Orden[];
+  completadasHoy: number;
+  perfiles: Perfil[];
+  error: any;
 }) {
-  const [data, setData] = useState<Orden[]>(initialOrdenes);
+  const [activas, setActivas] = useState<Orden[]>(initialActivas);
+  const [cerradasHoy, setCerradasHoy] = useState<number>(completadasHoy);
 
   useEffect(() => {
     const channel = supabase
@@ -39,11 +44,16 @@ export default function DashboardClient({
         async (payload) => {
           const newRow = payload.new as Orden;
           const oldRow = payload.old as Orden;
-          
-          setData((prev) => prev.map((o) => o.orden_trabajo === newRow.orden_trabajo ? { ...o, ...newRow } : o));
 
-          // Si el estado cambió a Efectiva o Cancelada, mostrar toast
-          if (oldRow.estado === 'Pendiente' && (newRow.estado === 'Efectiva' || newRow.estado === 'Cancelada')) {
+          const esCerrada = newRow.estado === 'Efectiva' || newRow.estado === 'Cancelada';
+          const eraCerrada = oldRow.estado === 'Efectiva' || oldRow.estado === 'Cancelada';
+
+          if (esCerrada && !eraCerrada) {
+            // Orden pasó de activa a cerrada: removerla de activas, incrementar contador de hoy
+            setActivas((prev) => prev.filter((o) => o.orden_trabajo !== newRow.orden_trabajo));
+            setCerradasHoy((prev) => prev + 1);
+
+            // Toast de cierre
             let nombreTecnico = 'Un técnico';
             if (newRow.id_tecnico_asignado) {
               const { data: perfil } = await supabase
@@ -51,12 +61,19 @@ export default function DashboardClient({
                 .select('nombre')
                 .eq('id_usuario', newRow.id_tecnico_asignado)
                 .single();
-                
+
               if (perfil && perfil.nombre) {
                 nombreTecnico = perfil.nombre.replace(/\b\w/g, (l: string) => l.toUpperCase());
               }
             }
             toast.success(`${nombreTecnico} cerró la orden ${newRow.contrato || newRow.orden_trabajo} como ${newRow.estado}.`);
+          } else if (!esCerrada && eraCerrada) {
+            // Orden reabierta: agregarla de vuelta a activas, decrementar contador
+            setActivas((prev) => [newRow, ...prev]);
+            setCerradasHoy((prev) => Math.max(0, prev - 1));
+          } else if (!esCerrada) {
+            // Actualización dentro de activas (ej: cambio de técnico, localidad, etc.)
+            setActivas((prev) => prev.map((o) => o.orden_trabajo === newRow.orden_trabajo ? { ...o, ...newRow } : o));
           }
         }
       )
@@ -65,7 +82,10 @@ export default function DashboardClient({
         { event: 'INSERT', schema: 'public', table: 'ordenes' },
         (payload) => {
           const newRow = payload.new as Orden;
-          setData((prev) => [newRow, ...prev]);
+          const esCerrada = newRow.estado === 'Efectiva' || newRow.estado === 'Cancelada';
+          if (!esCerrada) {
+            setActivas((prev) => [newRow, ...prev]);
+          }
         }
       )
       .subscribe();
@@ -75,11 +95,11 @@ export default function DashboardClient({
     };
   }, []);
 
-  // Cálculos totales
-  const ordenesActivas = data.filter(o => o.estado !== 'Efectiva' && o.estado !== 'Cancelada');
-  const totalActivas = ordenesActivas.length;
+  // ── Tarjeta 1: Órdenes Activas ──
+  const totalActivas = activas.length;
 
-  const pendientesVencidas = ordenesActivas.filter(o => {
+  // ── Tarjeta 2: Pendientes (>= 3 días SLA) ──
+  const pendientesVencidas = activas.filter(o => {
     if (!o.fecha_asignacion_ot) return false;
     const asignacion = new Date(o.fecha_asignacion_ot);
     const ahora = new Date();
@@ -88,15 +108,13 @@ export default function DashboardClient({
     return dias >= 3;
   }).length;
 
-  const finalizadas = data.filter(o => o.estado === 'Efectiva' || o.estado === 'Cancelada').length;
-  const totalOrdenesGeneral = data.length;
+  // ── Tarjeta 3: Completadas Hoy ──
+  // cerradasHoy ya viene del servidor y se actualiza en tiempo real
 
-  const activasPct = totalOrdenesGeneral ? ((totalActivas / totalOrdenesGeneral) * 100).toFixed(1) : '0.0';
   const pendientesPct = totalActivas ? ((pendientesVencidas / totalActivas) * 100).toFixed(1) : '0.0';
-  const finalizadasPct = totalOrdenesGeneral ? ((finalizadas / totalOrdenesGeneral) * 100).toFixed(1) : '0.0';
 
-  // Agrupar por Localidad — solo órdenes activas (excluye Efectiva y Cancelada)
-  const locMap = ordenesActivas.reduce((acc, curr) => {
+  // Agrupar por Localidad — SOLO órdenes activas
+  const locMap = activas.reduce((acc, curr) => {
     const loc = curr.localidad || 'SIN LOCALIDAD';
     acc[loc] = (acc[loc] || 0) + 1;
     return acc;
@@ -125,9 +143,8 @@ export default function DashboardClient({
     l.colorHex = colors[i % colors.length].colorHex;
   });
 
-  // Agrupar por Técnico (Carga por Técnico)
-  // SOLO contar las órdenes con estado 'Pendiente'
-  const pendingOrders = data.filter(o => o.estado === 'Pendiente');
+  // Agrupar por Técnico (Carga por Técnico) — SOLO órdenes activas con estado 'Pendiente'
+  const pendingOrders = activas.filter(o => o.estado === 'Pendiente');
   
   const techMap = pendingOrders.reduce((acc, curr) => {
     const techId = curr.id_tecnico_asignado;
@@ -152,7 +169,7 @@ export default function DashboardClient({
 
   const maxCarga = Math.max(...tecnicosCount.map(t => t.val), unassignedCount, 15);
 
-  const tecnicosList = [];
+  const tecnicosList: { initials: string; name: string; val: number; bg: string; max: number }[] = [];
   if (unassignedCount > 0) {
     tecnicosList.push({
       initials: 'SA',
@@ -205,7 +222,7 @@ export default function DashboardClient({
           <div className="flex flex-col">
             <span className="text-sm font-medium text-gray-500">Órdenes Activas</span>
             <span className="text-4xl font-bold text-gray-900 mt-1">{totalActivas}</span>
-            <span className="text-xs text-gray-400 mt-1">{activasPct}% del total histórico</span>
+            <span className="text-xs text-gray-400 mt-1">En gestión actualmente</span>
           </div>
         </div>
         <div className="bg-white p-6 rounded-2xl shadow-lg border border-gray-100 flex items-center">
@@ -223,9 +240,9 @@ export default function DashboardClient({
             <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
           </div>
           <div className="flex flex-col">
-            <span className="text-sm font-medium text-gray-500">Finalizadas</span>
-            <span className="text-4xl font-bold text-gray-900 mt-1">{finalizadas}</span>
-            <span className="text-xs text-gray-400 mt-1">{finalizadasPct}% del total</span>
+            <span className="text-sm font-medium text-gray-500">Completadas Hoy</span>
+            <span className="text-4xl font-bold text-gray-900 mt-1">{cerradasHoy}</span>
+            <span className="text-xs text-gray-400 mt-1">Rendimiento del día</span>
           </div>
         </div>
       </div>
