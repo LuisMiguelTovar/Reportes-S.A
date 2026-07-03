@@ -31,11 +31,19 @@ export default async function DashboardPage() {
     .select('id_usuario, nombre')
     .eq('rol', 'Técnico');
 
+  // ── Consulta 4: Última actualización de datos (Excel) ──
+  const { data: metaUpdate } = await supabase
+    .from('app_metadata')
+    .select('valor')
+    .eq('clave', 'ultima_carga_excel')
+    .single();
+
   return (
     <DashboardClient
       ordenesActivas={ordenesActivas || []}
       completadasHoy={completadasHoy ?? 0}
       perfiles={perfiles || []}
+      ultimaActualizacionExcel={metaUpdate?.valor ?? null}
       error={errActivas || errCount || errPerfiles}
     />
   );

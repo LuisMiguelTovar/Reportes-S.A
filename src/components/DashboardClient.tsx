@@ -25,11 +25,13 @@ export default function DashboardClient({
   ordenesActivas: initialActivas,
   completadasHoy,
   perfiles,
+  ultimaActualizacionExcel,
   error
 }: {
   ordenesActivas: Orden[];
   completadasHoy: number;
   perfiles: Perfil[];
+  ultimaActualizacionExcel: string | null;
   error: any;
 }) {
   const [activas, setActivas] = useState<Orden[]>(initialActivas);
@@ -194,10 +196,11 @@ export default function DashboardClient({
 
   tecnicosList.sort((a, b) => b.val - a.val);
 
-  // Timestamp for "last updated"
-  const now = new Date();
-  const timeStr = now.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' });
-  const dateStr = now.toLocaleDateString('es-CO', { day: '2-digit', month: 'short', year: 'numeric' });
+  // Timestamp for "last updated" — comes from app_metadata (real DB upload date)
+  const lastUpdate = ultimaActualizacionExcel ? new Date(ultimaActualizacionExcel) : null;
+  const updateLabel = lastUpdate
+    ? lastUpdate.toLocaleString('es-CO', { timeZone: 'America/Bogota', day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+    : 'Sin datos';
 
   // Total pending orders for percentage badges in tech section
   const totalPending = pendingOrders.length;
@@ -213,7 +216,7 @@ export default function DashboardClient({
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2 text-[#64748B] bg-white border border-[#E5E7EB] rounded-xl px-3.5 py-2">
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-            <span className="text-xs font-medium">{dateStr} · {timeStr}</span>
+            <span className="text-xs font-medium">{updateLabel}</span>
           </div>
           <NotificationsBell />
           <UserProfile />
@@ -279,7 +282,7 @@ export default function DashboardClient({
             ) : (
               localidades.map((item) => (
                 <div key={item.loc} className="flex items-center gap-4">
-                  <span className="text-[13px] font-medium text-[#0F172A] w-36 shrink-0 truncate" title={item.loc}>{item.loc}</span>
+                  <span className="text-[13px] font-medium text-[#0F172A] min-w-[150px] max-w-[200px] shrink-0 whitespace-normal leading-snug" title={item.loc}>{item.loc}</span>
                   <div className="flex-1">
                     <div className="w-full bg-slate-100 rounded-full h-[6px]">
                       <div className="bg-blue-600 h-[6px] rounded-full transition-all duration-500" style={{ width: item.pct }}></div>
