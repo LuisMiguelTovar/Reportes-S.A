@@ -14,9 +14,18 @@ export default async function DashboardPage() {
 
   // ── Consulta 2: Rendimiento diario (completadas HOY) ──
   // Usamos head: true para no descargar filas, solo el count.
-  const ahora = new Date();
-  const inicioHoy = new Date(ahora.getFullYear(), ahora.getMonth(), ahora.getDate(), 0, 0, 0).toISOString();
-  const finHoy = new Date(ahora.getFullYear(), ahora.getMonth(), ahora.getDate(), 23, 59, 59).toISOString();
+  const now = new Date();
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Bogota',
+    year: 'numeric', month: '2-digit', day: '2-digit'
+  });
+  const parts = formatter.formatToParts(now);
+  const dateObj: Record<string, string> = {};
+  parts.forEach(({ type, value }) => { dateObj[type] = value; });
+
+  // Formato ISO forzando el offset de Colombia (-05:00)
+  const inicioHoy = `${dateObj.year}-${dateObj.month}-${dateObj.day}T00:00:00-05:00`;
+  const finHoy = `${dateObj.year}-${dateObj.month}-${dateObj.day}T23:59:59-05:00`;
 
   const { count: completadasHoy, error: errCount } = await supabase
     .from('ordenes')
