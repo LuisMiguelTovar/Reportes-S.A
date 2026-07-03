@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { supabase } from '@/lib/supabase';
 import UserProfile from '@/components/UserProfile';
 import NotificationsBell from '@/components/NotificationsBell';
@@ -25,17 +25,38 @@ export default function DashboardClient({
   ordenesActivas: initialActivas,
   completadasHoy,
   perfiles,
-  ultimaActualizacionExcel,
   error
 }: {
   ordenesActivas: Orden[];
   completadasHoy: number;
   perfiles: Perfil[];
-  ultimaActualizacionExcel: string | null;
   error: any;
 }) {
   const [activas, setActivas] = useState<Orden[]>(initialActivas);
   const [cerradasHoy, setCerradasHoy] = useState<number>(completadasHoy);
+  const [lastUpdateDate, setLastUpdateDate] = useState<string | null>(null);
+
+  const fetchLastUploadDate = useCallback(async () => {
+    const { data, error } = await supabase
+      .from('app_metadata')
+      .select('valor')
+      .eq('clave', 'ultima_carga_excel')
+      .single();
+
+    if (!error && data?.valor) {
+      const fecha = new Date(data.valor);
+      const formatted = fecha.toLocaleString('es-CO', {
+        timeZone: 'America/Bogota',
+        dateStyle: 'short',
+        timeStyle: 'short',
+      });
+      setLastUpdateDate(formatted);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchLastUploadDate();
+  }, [fetchLastUploadDate]);
 
   useEffect(() => {
     const channel = supabase
@@ -196,12 +217,6 @@ export default function DashboardClient({
 
   tecnicosList.sort((a, b) => b.val - a.val);
 
-  // Timestamp for "last updated" — comes from app_metadata (real DB upload date)
-  const lastUpdate = ultimaActualizacionExcel ? new Date(ultimaActualizacionExcel) : null;
-  const updateLabel = lastUpdate
-    ? lastUpdate.toLocaleString('es-CO', { timeZone: 'America/Bogota', dateStyle: 'short', timeStyle: 'short' })
-    : 'Sin datos';
-
   // Total pending orders for percentage badges in tech section
   const totalPending = pendingOrders.length;
 
@@ -214,10 +229,11 @@ export default function DashboardClient({
           <p className="text-[13px] text-[#64748B] mt-0.5">Visión global del sistema de órdenes</p>
         </div>
         <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2 text-[#64748B] bg-white border border-[#E5E7EB] rounded-xl px-3.5 py-2">
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-            <span className="text-xs font-medium">{updateLabel}</span>
-          </div>
+          {lastUpdateDate && (
+            <span className="text-sm font-medium text-gray-500 hidden md:block mr-4">
+              Última actualización: {lastUpdateDate}
+            </span>
+          )}
           <NotificationsBell />
           <UserProfile />
         </div>
