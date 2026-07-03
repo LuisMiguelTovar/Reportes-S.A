@@ -19,8 +19,8 @@ export default function Sidebar() {
   };
 
   return (
-    <aside className="w-64 bg-slate-900 text-slate-300 flex flex-col h-full flex-shrink-0">
-      <div className="p-6 border-b border-slate-800">
+    <aside className="w-64 bg-[#0F172A] text-slate-300 flex flex-col h-full flex-shrink-0">
+      <div className="px-5 py-5 border-b border-slate-800/60">
         <div className="flex items-center gap-3">
           <img src="/logo.png" alt="Logo HLGAS" className="w-10 h-10 object-contain rounded-xl shrink-0" />
           <div>
@@ -29,13 +29,13 @@ export default function Sidebar() {
           </div>
         </div>
       </div>
-      <nav className="flex-1 p-4 space-y-1">
+      <nav className="flex-1 px-3 py-4 space-y-0.5">
         <Link 
           href="/" 
-          className={`flex items-center gap-3 px-4 py-3 rounded-xl font-medium transition-colors ${
+          className={`flex items-center gap-3 px-4 py-2.5 rounded-xl text-[14px] font-medium transition-all duration-150 ${
             pathname === '/' 
-              ? 'bg-blue-600 text-white' 
-              : 'hover:bg-slate-800 text-slate-300 hover:text-white'
+              ? 'bg-[#2563EB] text-white shadow-none' 
+              : 'hover:bg-[#172554] text-slate-400 hover:text-slate-100'
           }`}
         >
           <svg className={`w-5 h-5 ${pathname === '/' ? 'opacity-100' : 'opacity-70'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" /></svg>
@@ -43,10 +43,10 @@ export default function Sidebar() {
         </Link>
         <Link 
           href="/despacho" 
-          className={`flex items-center gap-3 px-4 py-3 rounded-xl font-medium transition-colors ${
+          className={`flex items-center gap-3 px-4 py-2.5 rounded-xl text-[14px] font-medium transition-all duration-150 ${
             pathname === '/despacho' 
-              ? 'bg-blue-600 text-white' 
-              : 'hover:bg-slate-800 text-slate-300 hover:text-white'
+              ? 'bg-[#2563EB] text-white shadow-none' 
+              : 'hover:bg-[#172554] text-slate-400 hover:text-slate-100'
           }`}
         >
           <svg className={`w-5 h-5 ${pathname === '/despacho' ? 'opacity-100' : 'opacity-70'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" /></svg>
@@ -54,10 +54,10 @@ export default function Sidebar() {
         </Link>
         <Link 
           href="/auditoria" 
-          className={`flex items-center gap-3 px-4 py-3 rounded-xl font-medium transition-colors ${
+          className={`flex items-center gap-3 px-4 py-2.5 rounded-xl text-[14px] font-medium transition-all duration-150 ${
             pathname === '/auditoria'
-              ? 'bg-blue-600 text-white' 
-              : 'hover:bg-slate-800 text-slate-300 hover:text-white'
+              ? 'bg-[#2563EB] text-white shadow-none' 
+              : 'hover:bg-[#172554] text-slate-400 hover:text-slate-100'
           }`}
         >
           <svg className={`w-5 h-5 ${pathname === '/auditoria' ? 'opacity-100' : 'opacity-70'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
@@ -65,17 +65,17 @@ export default function Sidebar() {
         </Link>
         <Link 
           href="/trazabilidad" 
-          className={`flex items-center gap-3 px-4 py-3 rounded-xl font-medium transition-colors whitespace-nowrap ${
+          className={`flex items-center gap-3 px-4 py-2.5 rounded-xl text-[14px] font-medium transition-all duration-150 whitespace-nowrap ${
             pathname === '/trazabilidad' 
-              ? 'bg-blue-500/20 text-white' 
-              : 'hover:bg-slate-800 text-slate-300 hover:text-white'
+              ? 'bg-[#2563EB] text-white shadow-none' 
+              : 'hover:bg-[#172554] text-slate-400 hover:text-slate-100'
           }`}
         >
           <svg className={`w-5 h-5 ${pathname === '/trazabilidad' ? 'opacity-100' : 'opacity-70'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l5.447 2.724A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" /></svg>
           Mapa de Recorridos
         </Link>
       </nav>
-      <div className="border-t border-slate-800 p-4 space-y-4">
+      <div className="border-t border-slate-800/60 px-3 py-4 space-y-3">
         <div className="flex items-center justify-between px-2">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-full bg-blue-600 flex items-center justify-center text-white font-medium">{initial}</div>

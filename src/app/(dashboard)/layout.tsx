@@ -49,8 +49,8 @@ export default function DashboardLayout({
   return (
     <div className="flex h-full">
       <Sidebar />
-      <main className="flex-1 h-full overflow-y-auto bg-gray-50 text-slate-800">
-        <div className="p-8">
+      <main className="flex-1 h-full overflow-y-auto bg-[#F8FAFC] text-slate-800">
+        <div className="p-6">
           {children}
         </div>
       </main>
