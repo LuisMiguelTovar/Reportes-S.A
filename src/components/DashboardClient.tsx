@@ -199,7 +199,7 @@ export default function DashboardClient({
   // Timestamp for "last updated" — comes from app_metadata (real DB upload date)
   const lastUpdate = ultimaActualizacionExcel ? new Date(ultimaActualizacionExcel) : null;
   const updateLabel = lastUpdate
-    ? lastUpdate.toLocaleString('es-CO', { timeZone: 'America/Bogota', day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+    ? lastUpdate.toLocaleString('es-CO', { timeZone: 'America/Bogota', dateStyle: 'short', timeStyle: 'short' })
     : 'Sin datos';
 
   // Total pending orders for percentage badges in tech section
@@ -281,14 +281,14 @@ export default function DashboardClient({
               <p className="text-[#64748B] text-sm">No hay datos para mostrar.</p>
             ) : (
               localidades.map((item) => (
-                <div key={item.loc} className="flex items-center gap-4">
-                  <span className="text-[13px] font-medium text-[#0F172A] min-w-[150px] max-w-[200px] shrink-0 whitespace-normal leading-snug" title={item.loc}>{item.loc}</span>
-                  <div className="flex-1">
+                <div key={item.loc} className="grid grid-cols-[140px_1fr_60px] gap-4 items-center">
+                  <span className="text-[13px] font-medium text-[#0F172A] whitespace-normal leading-snug" title={item.loc}>{item.loc}</span>
+                  <div>
                     <div className="w-full bg-slate-100 rounded-full h-[6px]">
                       <div className="bg-blue-600 h-[6px] rounded-full transition-all duration-500" style={{ width: item.pct }}></div>
                     </div>
                   </div>
-                  <div className="text-right shrink-0 w-20">
+                  <div className="text-right">
                     <span className="text-[14px] font-bold text-[#0F172A] block leading-tight">{item.val}</span>
                     <span className="text-[11px] text-[#64748B] leading-tight">{item.pct}</span>
                   </div>
