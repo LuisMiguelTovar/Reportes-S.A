@@ -221,7 +221,7 @@ export default function DashboardClient({
   const totalPending = pendingOrders.length;
 
   return (
-    <div className="max-w-7xl mx-auto space-y-5 px-4 sm:px-6 lg:px-8">
+    <div className="w-full space-y-6 px-4 sm:px-6 lg:px-8">
       {/* ── Header ── */}
       <div className="flex items-center justify-between">
         <div>
@@ -246,9 +246,9 @@ export default function DashboardClient({
       )}
 
       {/* ── KPI Cards ── */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         {/* Órdenes Activas */}
-        <div className="bg-white px-5 py-4 rounded-xl shadow-sm border border-[#E5E7EB] flex items-center gap-4 max-h-[100px]">
+        <div className="bg-white p-6 rounded-xl shadow-sm border border-[#E5E7EB] flex items-center gap-6 max-h-[110px]">
           <div className="w-12 h-12 rounded-full bg-blue-50 flex items-center justify-center shrink-0">
             <svg className="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" /></svg>
           </div>
@@ -259,7 +259,7 @@ export default function DashboardClient({
           </div>
         </div>
         {/* Pendientes >= 3 días */}
-        <div className="bg-white px-5 py-4 rounded-xl shadow-sm border border-[#E5E7EB] flex items-center gap-4 max-h-[100px]">
+        <div className="bg-white p-6 rounded-xl shadow-sm border border-[#E5E7EB] flex items-center gap-6 max-h-[110px]">
           <div className="w-12 h-12 rounded-full bg-orange-50 flex items-center justify-center shrink-0">
             <svg className="w-6 h-6 text-orange-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
           </div>
@@ -270,7 +270,7 @@ export default function DashboardClient({
           </div>
         </div>
         {/* Completadas Hoy */}
-        <div className="bg-white px-5 py-4 rounded-xl shadow-sm border border-[#E5E7EB] flex items-center gap-4 max-h-[100px]">
+        <div className="bg-white p-6 rounded-xl shadow-sm border border-[#E5E7EB] flex items-center gap-6 max-h-[110px]">
           <div className="w-12 h-12 rounded-full bg-emerald-50 flex items-center justify-center shrink-0">
             <svg className="w-6 h-6 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M5 13l4 4L19 7" /></svg>
           </div>
@@ -283,9 +283,9 @@ export default function DashboardClient({
       </div>
 
       {/* ── Middle Row: Localidades + Alertas ── */}
-      <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
         {/* Órdenes por Localidad — 60% */}
-        <div className="lg:col-span-3 bg-white rounded-xl shadow-sm border border-[#E5E7EB] p-5">
+        <div className="lg:col-span-3 bg-white rounded-xl shadow-sm border border-[#E5E7EB] p-6">
           <div className="flex items-center gap-2 mb-4">
             <div className="w-7 h-7 rounded-lg bg-blue-50 flex items-center justify-center">
               <svg className="w-4 h-4 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.243-4.243a8 8 0 1111.314 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
@@ -318,7 +318,7 @@ export default function DashboardClient({
         </div>
 
         {/* Alertas — 40% */}
-        <div className="lg:col-span-2 bg-white rounded-xl shadow-sm border border-[#E5E7EB] p-5">
+        <div className="lg:col-span-2 bg-white rounded-xl shadow-sm border border-[#E5E7EB] p-6">
           <div className="flex items-center gap-2 mb-4">
             <div className="w-7 h-7 rounded-lg bg-red-50 flex items-center justify-center">
               <svg className="w-4 h-4 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" /></svg>
@@ -364,7 +364,7 @@ export default function DashboardClient({
       </div>
 
       {/* ── Carga por Técnico ── */}
-      <div className="bg-white rounded-xl shadow-sm border border-[#E5E7EB] p-5">
+      <div className="bg-white rounded-xl shadow-sm border border-[#E5E7EB] p-6">
         <div className="flex items-center gap-2 mb-4">
           <div className="w-7 h-7 rounded-lg bg-blue-50 flex items-center justify-center">
             <svg className="w-4 h-4 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" /></svg>

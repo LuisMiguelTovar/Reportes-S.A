@@ -534,7 +534,7 @@ export default function DespachoTableClient() {
 
       {/* Tabla de Despacho */}
       <div className="bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden p-6 mt-6">
-        <div className="overflow-x-auto">
+        <div className="w-full overflow-x-auto">
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className="bg-gray-50 border-b border-gray-200 text-xs uppercase text-gray-500 font-semibold tracking-wider">
@@ -546,15 +546,15 @@ export default function DespachoTableClient() {
                     onChange={handleSelectAll}
                   />
                 </th>
-                <th className="py-3 px-4">Orden</th>
-                <th className="py-3 px-4">Contrato</th>
-                <th className="py-3 px-4">Dirección</th>
-                <th className="py-3 px-4">Barrio</th>
-                <th className="py-3 px-4">Localidad</th>
-                <th className="py-3 px-4">Descripción del Trabajo</th>
-                <th className="py-3 px-4">Días / SLA</th>
-                <th className="py-3 px-4">Técnico Asignado</th>
-                <th className="py-3 px-4 text-center">Acciones</th>
+                <th className="py-3 px-4 whitespace-nowrap">Orden</th>
+                <th className="py-3 px-4 whitespace-nowrap">Contrato</th>
+                <th className="py-3 px-4 min-w-[200px]">Dirección</th>
+                <th className="py-3 px-4 min-w-[200px]">Barrio</th>
+                <th className="py-3 px-4 whitespace-nowrap">Localidad</th>
+                <th className="py-3 px-4 min-w-[200px]">Descripción del Trabajo</th>
+                <th className="py-3 px-4 whitespace-nowrap">Días / SLA</th>
+                <th className="py-3 px-4 whitespace-nowrap">Técnico Asignado</th>
+                <th className="py-3 px-4 text-center whitespace-nowrap">Acciones</th>
               </tr>
             </thead>
             <tbody className="text-sm text-gray-700">
@@ -575,12 +575,12 @@ export default function DespachoTableClient() {
                         onChange={(e) => handleSelectOne(row.orden_trabajo, e.target.checked)}
                       />
                     </td>
-                    <td className="py-3 px-4 font-medium text-gray-900">{row.orden_trabajo}</td>
-                    <td className="py-3 px-4">{row.contrato}</td>
-                    <td className="py-3 px-4">{row.direccion}</td>
-                    <td className="py-3 px-4">{row.barrio || '-'}</td>
-                    <td className="py-3 px-4">{row.localidad}</td>
-                    <td className="py-3 px-4 text-xs text-gray-500 whitespace-normal break-words min-w-[200px]" title={row.descripcion_del_trabajo || ''}>
+                    <td className="py-3 px-4 whitespace-nowrap font-medium text-gray-900">{row.orden_trabajo}</td>
+                    <td className="py-3 px-4 whitespace-nowrap">{row.contrato}</td>
+                    <td className="py-3 px-4 min-w-[200px] max-w-[300px] truncate" title={row.direccion}>{row.direccion}</td>
+                    <td className="py-3 px-4 min-w-[200px] max-w-[300px] truncate" title={row.barrio || '-'}>{row.barrio || '-'}</td>
+                    <td className="py-3 px-4 whitespace-nowrap">{row.localidad}</td>
+                    <td className="py-3 px-4 text-sm text-gray-500 truncate min-w-[200px] max-w-[300px]" title={row.descripcion_del_trabajo || ''}>
                       {row.descripcion_del_trabajo || '-'}
                     </td>
                     <td className="py-3 px-4 whitespace-nowrap">
@@ -604,7 +604,7 @@ export default function DespachoTableClient() {
                         );
                       })()}
                     </td>
-                    <td className="py-3 px-4 text-center">
+                    <td className="py-3 px-4 text-center whitespace-nowrap">
                       <button
                         onClick={(e) => {
                           if (openMenuId === row.orden_trabajo) {

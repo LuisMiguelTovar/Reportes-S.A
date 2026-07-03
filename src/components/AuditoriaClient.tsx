@@ -334,11 +334,11 @@ export default function AuditoriaClient({ initialData, error }: { initialData: O
       </div>
 
       <div className="bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden">
-        <div className="overflow-x-auto">
+        <div className="w-full overflow-x-auto">
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className="bg-gray-50 border-b border-gray-200 text-xs uppercase text-gray-500 font-semibold tracking-wider">
-                <th className="py-4 px-6 w-12 text-center">
+                <th className="py-3 px-4 w-12 text-center">
                   <input
                     type="checkbox"
                     className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer h-4 w-4"
@@ -346,14 +346,14 @@ export default function AuditoriaClient({ initialData, error }: { initialData: O
                     onChange={handleSelectAll}
                   />
                 </th>
-                <th className="py-4 px-6">Fecha de Cierre</th>
-                <th className="py-4 px-6">Nº Orden</th>
-                <th className="py-4 px-6">Contrato</th>
-                <th className="py-4 px-6">Dirección</th>
-                <th className="py-4 px-6">Barrio</th>
-                <th className="py-4 px-6">Estado</th>
-                <th className="py-4 px-6">Técnico</th>
-                <th className="py-4 px-6">Acciones</th>
+                <th className="py-3 px-4 whitespace-nowrap">Fecha de Cierre</th>
+                <th className="py-3 px-4 whitespace-nowrap">Nº Orden</th>
+                <th className="py-3 px-4 whitespace-nowrap">Contrato</th>
+                <th className="py-3 px-4 min-w-[200px]">Dirección</th>
+                <th className="py-3 px-4 min-w-[200px]">Barrio</th>
+                <th className="py-3 px-4 whitespace-nowrap">Estado</th>
+                <th className="py-3 px-4 whitespace-nowrap">Técnico</th>
+                <th className="py-3 px-4 whitespace-nowrap">Acciones</th>
               </tr>
             </thead>
             <tbody className="text-sm text-gray-700">
@@ -366,7 +366,7 @@ export default function AuditoriaClient({ initialData, error }: { initialData: O
               ) : (
                 dataOrdenada.map((row) => (
                     <tr key={row.orden_trabajo} className="border-b border-gray-100 hover:bg-gray-50 transition-colors">
-                      <td className="py-4 px-6 text-center">
+                      <td className="py-3 px-4 text-center whitespace-nowrap">
                         <input
                           type="checkbox"
                           className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer h-4 w-4"
@@ -374,7 +374,7 @@ export default function AuditoriaClient({ initialData, error }: { initialData: O
                           onChange={() => handleSelectOne(row.orden_trabajo)}
                         />
                       </td>
-                      <td className="py-4 px-6 text-gray-900">
+                      <td className="py-3 px-4 text-gray-900 whitespace-nowrap">
                         {row.fecha_cierre ? new Date(row.fecha_cierre).toLocaleString('es-CO', {
                           timeZone: 'America/Bogota',
                           day: '2-digit',
@@ -385,17 +385,17 @@ export default function AuditoriaClient({ initialData, error }: { initialData: O
                           hour12: true
                         }) : 'Sin fecha'}
                       </td>
-                      <td className="py-4 px-6 font-medium text-gray-900">{row.orden_trabajo}</td>
-                      <td className="py-4 px-6 text-gray-500">{row.contrato}</td>
-                      <td className="py-4 px-6 text-gray-500">{row.direccion || '-'}</td>
-                      <td className="py-4 px-6 text-gray-500">{row.barrio || '-'}</td>
-                      <td className="py-4 px-6">
+                      <td className="py-3 px-4 font-medium text-gray-900 whitespace-nowrap">{row.orden_trabajo}</td>
+                      <td className="py-3 px-4 text-gray-500 whitespace-nowrap">{row.contrato}</td>
+                      <td className="py-3 px-4 text-gray-500 min-w-[200px] max-w-[300px] truncate" title={row.direccion || '-'}>{row.direccion || '-'}</td>
+                      <td className="py-3 px-4 text-gray-500 min-w-[200px] max-w-[300px] truncate" title={row.barrio || '-'}>{row.barrio || '-'}</td>
+                      <td className="py-3 px-4 whitespace-nowrap">
                         <span className={`px-3 py-1 rounded-full text-xs font-semibold ${row.estado === 'Cancelada' ? 'bg-red-50 text-red-700 border border-red-200' : 'bg-green-50 text-green-700 border border-green-200'}`}>
                           {row.estado}
                         </span>
                       </td>
-                      <td className="py-4 px-6 text-gray-600">{getTecnicoNombre(row.id_tecnico_asignado)}</td>
-                      <td className="py-4 px-6">
+                      <td className="py-3 px-4 text-gray-600 whitespace-nowrap">{getTecnicoNombre(row.id_tecnico_asignado)}</td>
+                      <td className="py-3 px-4 whitespace-nowrap">
                         <div className="flex items-center gap-2">
                           {row.urls_fotos && row.urls_fotos.length > 0 ? (
                             <button
