@@ -72,6 +72,7 @@ export default function DespachoTableClient() {
   const [ordenes, setOrdenes] = useState<Orden[]>([]);
   const [loadingOrdenes, setLoadingOrdenes] = useState(true);
   const [errorOrdenes, setErrorOrdenes] = useState<string | null>(null);
+  const [isInitialLoad, setIsInitialLoad] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [localidadFilter, setLocalidadFilter] = useState('Todas');
   const [descripcionFilter, setDescripcionFilter] = useState('Todas las Descripciones');
@@ -189,6 +190,7 @@ export default function DespachoTableClient() {
       setTotalCount(count ?? 0);
     }
     setLoadingOrdenes(false);
+    setIsInitialLoad(false);
   }, [buildFilteredQuery, debouncedSearch, localidadFilter, descripcionFilter, fechaFilter, tecnicoFilter, estadoFilter, currentPage]);
 
   // ── Fetch opciones únicas para dropdowns (una vez al montar) ──
@@ -704,7 +706,7 @@ export default function DespachoTableClient() {
   };
 
 
-  if (loadingOrdenes) {
+  if (loadingOrdenes && isInitialLoad) {
     return (
       <div className="flex items-center justify-center py-20">
         <div className="flex flex-col items-center gap-3">
@@ -825,7 +827,7 @@ export default function DespachoTableClient() {
       </div>
 
       {/* Tabla de Despacho */}
-      <div className="bg-white rounded-2xl shadow-[0_8px_24px_rgba(15,23,42,0.05)] border border-gray-100 overflow-hidden p-6 mt-4">
+      <div className={`bg-white rounded-2xl shadow-[0_8px_24px_rgba(15,23,42,0.05)] border border-gray-100 overflow-hidden p-6 mt-4 transition-opacity duration-150 ${loadingOrdenes && !isInitialLoad ? 'opacity-50' : 'opacity-100'}`}>
         <div className="w-full overflow-x-auto">
           <table className="w-full min-w-[1200px] text-left border-collapse">
             <thead>
