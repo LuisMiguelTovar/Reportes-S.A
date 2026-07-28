@@ -145,12 +145,20 @@ export default function UploadExcelButton({ onUploadSuccess }: UploadExcelButton
           nuevasOrdenes.push(fila);
         } else {
           // La orden ya existe. Protegemos los datos de campo.
-          // Solo actualizamos si sigue "Pendiente" y el técnico en Excel es diferente al de la BD.
-          if (dbOrder.estado === 'Pendiente' && dbOrder.id_tecnico_asignado !== fila.id_tecnico_asignado) {
+          // Actualizamos si está "Pendiente" o "Programada" y el técnico en Excel es diferente al de la BD.
+          // Efectiva y Cancelada quedan siempre protegidas, sin cambios.
+          const esReasignable = dbOrder.estado === 'Pendiente' || dbOrder.estado === 'Programada';
+          if (esReasignable && dbOrder.id_tecnico_asignado !== fila.id_tecnico_asignado) {
+            const updatePayload: Record<string, unknown> = { id_tecnico_asignado: fila.id_tecnico_asignado };
+            // Si estaba Programada, reasignar técnico desde el Excel la reactiva a Pendiente
+            // para que vuelva a aparecer en la app del técnico.
+            if (dbOrder.estado === 'Programada') {
+              updatePayload.estado = 'Pendiente';
+            }
             promesasActualizacion.push(
               supabase
                 .from('ordenes')
-                .update({ id_tecnico_asignado: fila.id_tecnico_asignado })
+                .update(updatePayload)
                 .eq('orden_trabajo', fila.orden_trabajo)
             );
             actualizadasCount++;
