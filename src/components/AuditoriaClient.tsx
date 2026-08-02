@@ -360,25 +360,126 @@ export default function AuditoriaClient() {
       return;
     }
 
-    const exportData = allFiltered.map((row: any) => ({
-      'Fecha Cierre': row.fecha_cierre ? new Date(row.fecha_cierre).toLocaleString('es-CO', {
-        timeZone: 'America/Bogota',
-        day: '2-digit',
-        month: '2-digit',
-        year: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: true
-      }) : 'Sin fecha',
-      'Nº Orden': row.orden_trabajo,
-      'Contrato': row.contrato,
-      'Dirección': row.direccion || '',
-      'Barrio': row.barrio || '',
-      'Estado': row.estado,
-      'Técnico': getTecnicoNombre(row.id_tecnico_asignado)
-    }));
+    // Traer el historial de todas las órdenes exportadas para extraer
+    // el comentario y el causal de cierre de cada una.
+    const ordenTrabajos = allFiltered.map((row: any) => row.orden_trabajo);
+    let historialData: any[] = [];
+    if (ordenTrabajos.length > 0) {
+      const { data } = await supabase
+        .from('historial_ordenes')
+        .select('orden_trabajo, comentario, causal_codigo, fecha, usuario, fotos')
+        .in('orden_trabajo', ordenTrabajos)
+        .order('fecha', { ascending: false });
+      historialData = data || [];
+    }
+
+    // JOIN manual con perfiles para obtener el nombre del autor (usuario = email)
+    const emailsHistorial = [...new Set(historialData.map((h: any) => h.usuario).filter(Boolean))];
+    let perfilesMap: Record<string, string> = {};
+    if (emailsHistorial.length > 0) {
+      const { data: perfilesData } = await supabase
+        .from('perfiles')
+        .select('email, nombre')
+        .in('email', emailsHistorial);
+      if (perfilesData) {
+        perfilesData.forEach((p: any) => { perfilesMap[p.email] = p.nombre; });
+      }
+    }
+
+    // Para cada orden, se toma la entrada de historial MÁS RECIENTE
+    // (como ya viene ordenado descendente por fecha, la primera que
+    // aparece por cada orden_trabajo es la más reciente — en la
+    // práctica, esa es la entrada de cierre, ya que las órdenes
+    // exportadas aquí ya están cerradas).
+    const cierrePorOrden: Record<string, { comentario?: string; causal_codigo?: string; fecha?: string; autorNombre?: string; fotos?: string[] }> = {};
+    historialData.forEach((h: any) => {
+      if (!cierrePorOrden[h.orden_trabajo]) {
+        cierrePorOrden[h.orden_trabajo] = {
+          comentario: h.comentario,
+          causal_codigo: h.causal_codigo,
+          fecha: h.fecha,
+          autorNombre: perfilesMap[h.usuario] || h.usuario,
+          fotos: h.fotos || [],
+        };
+      }
+    });
+
+    // Precalcular las fotos de cada orden y el máximo de fotos en este export
+    const fotosPorOrden: string[][] = allFiltered.map((row: any) => {
+      const cierre = cierrePorOrden[row.orden_trabajo];
+      return (row.urls_fotos && row.urls_fotos.length > 0)
+        ? row.urls_fotos
+        : (cierre?.fotos || []);
+    });
+    const maxFotos = fotosPorOrden.reduce((max: number, fotos: string[]) => Math.max(max, fotos.length), 0);
+
+    // Cantidad de columnas fijas ANTES de las columnas de fotos (para calcular
+    // en qué columna empiezan "Foto 1", "Foto 2", etc.)
+    // Fecha Cierre, Nº Orden, Contrato, Dirección, Barrio, Estado, Técnico,
+    // Causal de Cierre, Comentario = 9 columnas fijas.
+    const NUM_COLUMNAS_FIJAS = 9;
+
+    const exportData = allFiltered.map((row: any, idx: number) => {
+      const cierre = cierrePorOrden[row.orden_trabajo];
+      const causalTexto = cierre?.causal_codigo && causalLabelPorCodigo[cierre.causal_codigo]
+        ? causalLabelPorCodigo[cierre.causal_codigo]
+        : '';
+      const badgeLabel = row.estado === 'Cancelada' ? 'Incumplida' : row.estado;
+
+      let comentarioCompleto = '';
+      if (cierre?.comentario) {
+        const fechaTexto = cierre.fecha
+          ? new Date(cierre.fecha).toLocaleDateString('es-CO', { timeZone: 'America/Bogota' })
+          : '';
+        comentarioCompleto = `${fechaTexto} · ${badgeLabel}${causalTexto ? ` (${causalTexto})` : ''} · ${cierre.autorNombre || ''}. ${cierre.comentario}`;
+      }
+
+      const fila: Record<string, string> = {
+        'Fecha Cierre': row.fecha_cierre ? new Date(row.fecha_cierre).toLocaleString('es-CO', {
+          timeZone: 'America/Bogota',
+          day: '2-digit',
+          month: '2-digit',
+          year: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: true
+        }) : 'Sin fecha',
+        'Nº Orden': row.orden_trabajo,
+        'Contrato': row.contrato,
+        'Dirección': row.direccion || '',
+        'Barrio': row.barrio || '',
+        'Estado': row.estado,
+        'Técnico': getTecnicoNombre(row.id_tecnico_asignado),
+        'Causal de Cierre': causalTexto,
+        'Comentario': comentarioCompleto,
+      };
+
+      // Una columna "Foto N" por cada foto, hasta el máximo detectado en el export
+      const fotos = fotosPorOrden[idx];
+      for (let n = 0; n < maxFotos; n++) {
+        fila[`Foto ${n + 1}`] = fotos[n] ? `Ver Foto ${n + 1}` : '';
+      }
+
+      return fila;
+    });
 
     const worksheet = XLSX.utils.json_to_sheet(exportData);
+
+    // Asignar el hipervínculo real a cada celda "Foto N" que tenga URL
+    allFiltered.forEach((_row: any, i: number) => {
+      const fotos = fotosPorOrden[i];
+      for (let n = 0; n < maxFotos; n++) {
+        if (fotos[n]) {
+          const colIndex = NUM_COLUMNAS_FIJAS + n; // 0-based
+          const colLetter = XLSX.utils.encode_col(colIndex);
+          const cellRef = `${colLetter}${i + 2}`; // +2: fila 1 son encabezados
+          if (worksheet[cellRef]) {
+            worksheet[cellRef].l = { Target: fotos[n], Tooltip: `Ver evidencia ${n + 1}` };
+          }
+        }
+      }
+    });
+
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, 'Auditoría');
     XLSX.writeFile(workbook, 'Reporte_Auditoria.xlsx');
