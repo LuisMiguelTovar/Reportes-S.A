@@ -99,7 +99,7 @@ export default function DespachoTableClient() {
   const [nuevasFotos, setNuevasFotos] = useState<File[]>([]);
   const [isGuardando, setIsGuardando] = useState(false);
   const [errorGuardar, setErrorGuardar] = useState<string | null>(null);
-  const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
+  const [lightbox, setLightbox] = useState<{ fotos: string[]; index: number } | null>(null);
   const [expandedEntries, setExpandedEntries] = useState<Set<number>>(new Set());
 
   // ── Paginación ──
@@ -112,6 +112,36 @@ export default function DespachoTableClient() {
 
   const [isAssigning, setIsAssigning] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+
+  useEffect(() => {
+    if (reporteOrden) {
+      document.body.style.overflow = 'hidden';
+      const handleKeyDown = (e: KeyboardEvent) => {
+        if (e.key === 'Escape') {
+          if (lightbox) {
+            setLightbox(null);
+          } else {
+            setReporteOrden(null);
+            setHistorial([]);
+            setNuevoComentario('');
+            setNuevoEstado(null);
+            setNuevaFechaProgramada('');
+            setNuevasFotos([]);
+            setErrorGuardar(null);
+          }
+        } else if (lightbox && e.key === 'ArrowLeft' && lightbox.fotos.length > 1) {
+          setLightbox({ ...lightbox, index: (lightbox.index - 1 + lightbox.fotos.length) % lightbox.fotos.length });
+        } else if (lightbox && e.key === 'ArrowRight' && lightbox.fotos.length > 1) {
+          setLightbox({ ...lightbox, index: (lightbox.index + 1) % lightbox.fotos.length });
+        }
+      };
+      document.addEventListener('keydown', handleKeyDown);
+      return () => {
+        document.body.style.overflow = '';
+        document.removeEventListener('keydown', handleKeyDown);
+      };
+    }
+  }, [reporteOrden, lightbox]);
 
   // Helper: formatea un Date a string legible en zona horaria de Colombia
   const formatTimestamp = (date: Date): string =>
@@ -1389,37 +1419,32 @@ export default function DespachoTableClient() {
                                 transition: 'max-height 0.25s ease-in-out, opacity 0.2s ease-in-out',
                               }}>
                                 <div style={{ padding: '0 16px 14px' }}>
-                                  {/* Bloque de texto único, copiable de un solo párrafo */}
-                                  <div style={{ fontSize: '14px', color: '#24324A', lineHeight: 1.7, whiteSpace: 'pre-wrap' }}>
-                                    {entry.comentario && (
-                                      <>
-                                        <span style={{ fontWeight: 600 }}>Comentario:</span> {entry.comentario}
-                                        {'\n'}
-                                      </>
+                                    {/* Texto plano — fecha, causal y técnico ya están en el encabezado de la tarjeta */}
+                                    {entry.comentario ? (
+                                      <p style={{ fontSize: '14px', color: '#24324A', lineHeight: 1.7, whiteSpace: 'pre-wrap', margin: 0 }}>
+                                        {entry.comentario}
+                                      </p>
+                                    ) : (
+                                      <p style={{ fontSize: '13px', color: '#9CA3AF', fontStyle: 'italic', margin: 0 }}>
+                                        No se registró comentario para esta actualización.
+                                      </p>
                                     )}
-                                    {entry.atendido_por && (
-                                      <>
-                                        <span style={{ fontWeight: 600 }}>Atendido por:</span> {entry.atendido_por}
-                                        {'\n'}
-                                      </>
-                                    )}
-                                    {entry.estado === 'Programada' && entry.fecha_programada && (
-                                      <>
-                                        <span style={{ fontWeight: 600 }}>Fecha estimada de atención:</span>{' '}
-                                        {new Date(entry.fecha_programada).toLocaleDateString('es-CO', { timeZone: 'America/Bogota' })}
-                                      </>
-                                    )}
-                                  </div>
 
-                                  {/* Fotos (solo si hay) */}
-                                  {fotos.length > 0 && (
+                                    {fotos.length === 0 && (
+                                      <p style={{ fontSize: '12px', color: '#9CA3AF', marginTop: '8px' }}>
+                                        Sin evidencias fotográficas.
+                                      </p>
+                                    )}
+
+                                    {/* Fotos (solo si hay) */}
+                                    {fotos.length > 0 && (
                                     <div style={{ marginTop: '10px' }}>
                                       <p style={{ fontSize: '11px', fontWeight: 600, color: '#9CA3AF', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '6px' }}>Evidencias</p>
                                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
                                         {fotosVisibles.map((url, i) => (
                                           <div
                                             key={i}
-                                            onClick={() => setLightboxUrl(url)}
+                                            onClick={() => setLightbox({ fotos, index: i })}
                                             style={{
                                               width: 64, height: 64, borderRadius: '8px', overflow: 'hidden',
                                               cursor: 'pointer', border: '1px solid #E5E7EB',
@@ -1433,7 +1458,7 @@ export default function DespachoTableClient() {
                                         ))}
                                         {fotosRestantes > 0 && (
                                           <div
-                                            onClick={() => setLightboxUrl(fotos[4])}
+                                            onClick={() => setLightbox({ fotos, index: 4 })}
                                             style={{
                                               width: 64, height: 64, borderRadius: '8px', background: '#F3F4F6',
                                               border: '1px solid #E5E7EB', display: 'flex', alignItems: 'center',
@@ -1749,25 +1774,45 @@ export default function DespachoTableClient() {
       {/* ══════════════════════════════════════════════════════════════════
           LIGHTBOX — Foto ampliada
          ══════════════════════════════════════════════════════════════════ */}
-      {lightboxUrl && (
+      {lightbox && (
         <div
           className="fixed inset-0 bg-black/80 z-[60] flex items-center justify-center p-4"
-          onClick={() => setLightboxUrl(null)}
+          onClick={() => setLightbox(null)}
         >
           <button
-            onClick={() => setLightboxUrl(null)}
+            onClick={() => setLightbox(null)}
             className="absolute top-4 right-4 text-white/80 hover:text-white transition-colors"
           >
             <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
             </svg>
           </button>
+
+          {lightbox.fotos.length > 1 && (
+            <button
+              onClick={(e) => { e.stopPropagation(); setLightbox({ ...lightbox, index: (lightbox.index - 1 + lightbox.fotos.length) % lightbox.fotos.length }); }}
+              className="absolute left-4 text-white/80 hover:text-white transition-colors"
+            >
+              <svg className="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg>
+            </button>
+          )}
+
           <img
-            src={lightboxUrl}
+            src={lightbox.fotos[lightbox.index]}
             alt="Evidencia ampliada"
-            className="max-w-full max-h-full rounded-lg object-contain"
+            className="rounded-lg object-contain"
+            style={{ maxWidth: 'min(900px, 85vw)', maxHeight: '75vh', width: 'auto', height: 'auto' }}
             onClick={(e) => e.stopPropagation()}
           />
+
+          {lightbox.fotos.length > 1 && (
+            <button
+              onClick={(e) => { e.stopPropagation(); setLightbox({ ...lightbox, index: (lightbox.index + 1) % lightbox.fotos.length }); }}
+              className="absolute right-4 text-white/80 hover:text-white transition-colors"
+            >
+              <svg className="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
+            </button>
+          )}
         </div>
       )}
     </>

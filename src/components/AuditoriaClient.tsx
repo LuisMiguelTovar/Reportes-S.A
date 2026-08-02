@@ -1,7 +1,6 @@
 'use client';
 
-import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { useRouter } from 'next/navigation';
+import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import * as XLSX from 'xlsx';
 import UserProfile from '@/components/UserProfile';
 import NotificationsBell from '@/components/NotificationsBell';
@@ -28,8 +27,16 @@ type Tecnico = {
   nombre: string;
 };
 
-export default function AuditoriaClient({ initialData, error }: { initialData: Orden[], error: any }) {
+const causalLabelPorCodigo: Record<string, string> = {
+  '9565': 'Inmueble solo',
+  '9584': 'Trabajo ejecutado por tercero',
+  '9589': 'Usuario no autoriza',
+  '3357': 'Trabajo no ejecutado',
+};
+
+export default function AuditoriaClient() {
   const [searchTerm, setSearchTerm] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [tecnicoFilter, setTecnicoFilter] = useState('Todos los Técnicos');
   const [estadoFilter, setEstadoFilter] = useState('Todos los Estados');
   const [startDate, setStartDate] = useState('');
@@ -41,10 +48,17 @@ export default function AuditoriaClient({ initialData, error }: { initialData: O
   const [selectedOrders, setSelectedOrders] = useState<string[]>([]);
   const [isDownloading, setIsDownloading] = useState(false);
   const [isReopening, setIsReopening] = useState<string | null>(null);
-  const [ordenes, setOrdenes] = useState<Orden[]>(initialData);
+  const [ordenes, setOrdenes] = useState<Orden[]>([]);
+  const [loadingOrdenes, setLoadingOrdenes] = useState(true);
+  const [errorOrdenes, setErrorOrdenes] = useState<any>(null);
+  const [isInitialLoad, setIsInitialLoad] = useState(true);
+
+  // ── Paginación ──
+  const PAGE_SIZE = 20;
+  const [currentPage, setCurrentPage] = useState(1);
+  const [totalCount, setTotalCount] = useState(0);
 
   const [tecnicos, setTecnicos] = useState<Tecnico[]>([]);
-  const router = useRouter();
 
   // ── Estado para el menú kebab de acciones ──
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
@@ -54,7 +68,7 @@ export default function AuditoriaClient({ initialData, error }: { initialData: O
   useEffect(() => {
     if (reporteOrden) {
       document.body.style.overflow = 'hidden';
-      const handleEscape = (e: KeyboardEvent) => {
+      const handleKeyDown = (e: KeyboardEvent) => {
         if (e.key === 'Escape') {
           if (lightbox) {
             setLightbox(null);
@@ -62,12 +76,16 @@ export default function AuditoriaClient({ initialData, error }: { initialData: O
             setReporteOrden(null);
             setHistorialAuditoria([]);
           }
+        } else if (lightbox && e.key === 'ArrowLeft' && lightbox.fotos.length > 1) {
+          setLightbox({ ...lightbox, index: (lightbox.index - 1 + lightbox.fotos.length) % lightbox.fotos.length });
+        } else if (lightbox && e.key === 'ArrowRight' && lightbox.fotos.length > 1) {
+          setLightbox({ ...lightbox, index: (lightbox.index + 1) % lightbox.fotos.length });
         }
       };
-      document.addEventListener('keydown', handleEscape);
+      document.addEventListener('keydown', handleKeyDown);
       return () => {
         document.body.style.overflow = '';
-        document.removeEventListener('keydown', handleEscape);
+        document.removeEventListener('keydown', handleKeyDown);
       };
     }
   }, [reporteOrden, lightbox]);
@@ -143,47 +161,77 @@ export default function AuditoriaClient({ initialData, error }: { initialData: O
   };
 
   const tecnicosUnicos = useMemo(() => {
-    const techs = ordenes.map(o => o.id_tecnico_asignado).filter(Boolean);
-    return Array.from(new Set(techs)).sort().map(id => getTecnicoNombre(id));
-  }, [ordenes, tecnicos]);
+    return tecnicos.map(t => t.nombre).sort();
+  }, [tecnicos]);
 
-  const filteredData = useMemo(() => {
-    return ordenes.filter(row => {
-      if (row.estado !== 'Efectiva' && row.estado !== 'Cancelada') return false;
+  const buildFilteredQuery = useCallback((search: string, tecnico: string, estado: string, desde: string, hasta: string, withCount: boolean) => {
+    const query = supabase
+      .from('ordenes')
+      .select('*', withCount ? { count: 'exact' } : undefined)
+      .neq('estado', 'Pendiente');
 
-      const matchesEstadoFilter = estadoFilter === 'Todos los Estados' || row.estado === estadoFilter;
-
-      const term = searchTerm.toLowerCase();
-      const matchesSearch =
-        !term ||
-        (row.contrato && row.contrato.toLowerCase().includes(term)) ||
-        (row.orden_trabajo && row.orden_trabajo.toLowerCase().includes(term));
-
-      const techName = getTecnicoNombre(row.id_tecnico_asignado);
-      const matchesTecnico = tecnicoFilter === 'Todos los Técnicos' || techName === tecnicoFilter;
-
-      let matchesDate = true;
-      if (row.fecha_cierre) {
-        // Convertir la fecha UTC a la zona horaria de Colombia antes de comparar
-        const fechaUTC = new Date(row.fecha_cierre);
-        const formatter = new Intl.DateTimeFormat('sv-SE', {
-          timeZone: 'America/Bogota',
-          year: 'numeric',
-          month: '2-digit',
-          day: '2-digit',
-        });
-        // formatter con locale 'sv-SE' produce formato YYYY-MM-DD directamente
-        const fechaCierreDay = formatter.format(fechaUTC);
-        if (startDate && fechaCierreDay < startDate) matchesDate = false;
-        if (endDate && fechaCierreDay > endDate) matchesDate = false;
-      } else if (startDate || endDate) {
-        // Si no tiene fecha_cierre y hay filtro activo, excluir la fila
-        matchesDate = false;
+    if (search) {
+      query.or(`contrato.ilike.%${search}%,orden_trabajo.ilike.%${search}%`);
+    }
+    if (estado !== 'Todos los Estados') {
+      query.eq('estado', estado);
+    }
+    if (tecnico !== 'Todos los Técnicos') {
+      const tecnicoObj = tecnicos.find(t => t.nombre === tecnico);
+      if (tecnicoObj) {
+        query.eq('id_tecnico_asignado', tecnicoObj.id_usuario);
       }
+    }
+    if (desde) {
+      // fecha_cierre >= inicio del día seleccionado (en hora Colombia, aproximado con el campo tal cual está almacenado)
+      query.gte('fecha_cierre', `${desde}T00:00:00`);
+    }
+    if (hasta) {
+      query.lte('fecha_cierre', `${hasta}T23:59:59`);
+    }
 
-      return matchesEstadoFilter && matchesSearch && matchesTecnico && matchesDate;
-    });
-  }, [ordenes, searchTerm, tecnicoFilter, estadoFilter, startDate, endDate, tecnicos]);
+    query.order('fecha_cierre', { ascending: false, nullsFirst: false });
+
+    return query;
+  }, [tecnicos]);
+
+  const fetchOrdenes = useCallback(async () => {
+    setLoadingOrdenes(true);
+    setErrorOrdenes(null);
+
+    const query = buildFilteredQuery(debouncedSearch, tecnicoFilter, estadoFilter, startDate, endDate, true);
+    const from = (currentPage - 1) * PAGE_SIZE;
+    const to = from + PAGE_SIZE - 1;
+    query.range(from, to);
+
+    const { data, error, count } = await query;
+
+    if (error) {
+      console.error('Error al cargar auditoría:', error);
+      setErrorOrdenes('No se pudieron cargar las órdenes.');
+    } else {
+      setOrdenes(data || []);
+      setTotalCount(count ?? 0);
+    }
+    setLoadingOrdenes(false);
+    setIsInitialLoad(false);
+  }, [buildFilteredQuery, debouncedSearch, tecnicoFilter, estadoFilter, startDate, endDate, currentPage]);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(searchTerm), 400);
+    return () => clearTimeout(timer);
+  }, [searchTerm]);
+
+  useEffect(() => {
+    setCurrentPage(1);
+    setSelectedOrders([]);
+  }, [debouncedSearch, tecnicoFilter, estadoFilter, startDate, endDate]);
+
+  useEffect(() => {
+    fetchOrdenes();
+  }, [fetchOrdenes]);
+
+  const filteredData = ordenes;
 
   const isAllSelected = filteredData.length > 0 && selectedOrders.length === filteredData.length;
 
@@ -203,6 +251,16 @@ export default function AuditoriaClient({ initialData, error }: { initialData: O
     );
   };
 
+
+  const handleDownloadSingle = async (url: string, filename: string) => {
+    try {
+      const response = await fetch(url);
+      const blob = await response.blob();
+      saveAs(blob, filename);
+    } catch (err) {
+      console.error("Error downloading file", err);
+    }
+  };
 
   // ── Reabrir orden ──────────────────────────────────────────────────────
   const handleReabrirOrden = async (ordenTrabajo: string) => {
@@ -237,9 +295,21 @@ export default function AuditoriaClient({ initialData, error }: { initialData: O
   const downloadZipSoportes = async () => {
     try {
       setIsDownloading(true);
+      let allFiltered = filteredData;
+      if (selectedOrders.length === 0) {
+        const query = buildFilteredQuery(debouncedSearch, tecnicoFilter, estadoFilter, startDate, endDate, false);
+        const { data, error } = await query;
+        if (error || !data) {
+          alert('No se pudo generar el reporte.');
+          setIsDownloading(false);
+          return;
+        }
+        allFiltered = data;
+      }
+
       const ordersToProcess = selectedOrders.length > 0 
-        ? filteredData.filter(row => selectedOrders.includes(row.orden_trabajo))
-        : filteredData;
+        ? allFiltered.filter(row => selectedOrders.includes(row.orden_trabajo))
+        : allFiltered;
 
       if (ordersToProcess.length === 0) {
         alert("No hay órdenes para descargar.");
@@ -282,8 +352,15 @@ export default function AuditoriaClient({ initialData, error }: { initialData: O
     }
   };
 
-  const exportToExcel = () => {
-    const exportData = filteredData.map(row => ({
+  const exportToExcel = async () => {
+    const query = buildFilteredQuery(debouncedSearch, tecnicoFilter, estadoFilter, startDate, endDate, false);
+    const { data: allFiltered, error } = await query;
+    if (error || !allFiltered) {
+      alert('No se pudo generar el reporte.');
+      return;
+    }
+
+    const exportData = allFiltered.map((row: any) => ({
       'Fecha Cierre': row.fecha_cierre ? new Date(row.fecha_cierre).toLocaleString('es-CO', {
         timeZone: 'America/Bogota',
         day: '2-digit',
@@ -307,7 +384,19 @@ export default function AuditoriaClient({ initialData, error }: { initialData: O
     XLSX.writeFile(workbook, 'Reporte_Auditoria.xlsx');
   };
 
-  const dataOrdenada = [...filteredData].sort((a, b) => new Date(b.fecha_cierre || 0).getTime() - new Date(a.fecha_cierre || 0).getTime());
+  if (loadingOrdenes && isInitialLoad) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <div className="flex flex-col items-center gap-3">
+          <svg className="animate-spin h-8 w-8 text-blue-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+          </svg>
+          <p className="text-sm text-gray-500">Cargando auditoría...</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -350,9 +439,9 @@ export default function AuditoriaClient({ initialData, error }: { initialData: O
         </div>
       </div>
 
-      {error && (
+      {errorOrdenes && (
         <div className="bg-red-50 text-red-700 p-4 rounded-lg border border-red-200 mb-6">
-          Error cargando las órdenes de auditoría.
+          {errorOrdenes}
         </div>
       )}
 
@@ -404,7 +493,7 @@ export default function AuditoriaClient({ initialData, error }: { initialData: O
         </select>
       </div>
 
-      <div className="bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden">
+      <div className={`bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden transition-opacity duration-150 ${loadingOrdenes && !isInitialLoad ? 'opacity-60 pointer-events-none' : 'opacity-100'}`}>
         <div className="w-full">
           <table className="w-full text-left border-collapse">
             <thead>
@@ -428,14 +517,14 @@ export default function AuditoriaClient({ initialData, error }: { initialData: O
               </tr>
             </thead>
             <tbody className="text-xs text-gray-700">
-              {dataOrdenada.length === 0 ? (
+              {filteredData.length === 0 ? (
                 <tr>
                   <td colSpan={9} className="py-8 px-6 text-center text-gray-500">
                     No hay órdenes en historial o que coincidan con los filtros.
                   </td>
                 </tr>
               ) : (
-                dataOrdenada.map((row) => (
+                filteredData.map((row) => (
                     <tr key={row.orden_trabajo} className="border-b border-gray-100 hover:bg-gray-50 transition-colors">
                       <td className="py-2 px-3 text-center">
                         <input
@@ -533,6 +622,73 @@ export default function AuditoriaClient({ initialData, error }: { initialData: O
             </tbody>
           </table>
         </div>
+
+        {/* ── Paginación ── */}
+        {totalCount > 0 && (() => {
+          const totalPages = Math.ceil(totalCount / PAGE_SIZE);
+          const from = (currentPage - 1) * PAGE_SIZE + 1;
+          const to = Math.min(currentPage * PAGE_SIZE, totalCount);
+
+          // Generar números de página visibles
+          const pages: (number | '...')[] = [];
+          if (totalPages <= 7) {
+            for (let i = 1; i <= totalPages; i++) pages.push(i);
+          } else {
+            pages.push(1);
+            if (currentPage > 3) pages.push('...');
+            for (let i = Math.max(2, currentPage - 1); i <= Math.min(totalPages - 1, currentPage + 1); i++) {
+              pages.push(i);
+            }
+            if (currentPage < totalPages - 2) pages.push('...');
+            pages.push(totalPages);
+          }
+
+          return (
+            <div className="flex items-center justify-between p-4 border-t border-gray-100 bg-gray-50/50">
+              <p className="text-sm text-gray-500">
+                Mostrando <span className="font-medium text-gray-700">{from}</span> a{' '}
+                <span className="font-medium text-gray-700">{to}</span> de{' '}
+                <span className="font-medium text-gray-700">{totalCount}</span> órdenes
+              </p>
+              <div className="flex items-center gap-1">
+                {/* Flecha anterior */}
+                <button
+                  onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                  disabled={currentPage === 1}
+                  className="px-2.5 py-1.5 text-sm rounded-lg border border-gray-200 text-gray-600 bg-white hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                >
+                  ←
+                </button>
+                {/* Números */}
+                {pages.map((p, i) =>
+                  p === '...' ? (
+                    <span key={`dots-${i}`} className="px-2 py-1 text-sm text-gray-400">...</span>
+                  ) : (
+                    <button
+                      key={p}
+                      onClick={() => setCurrentPage(p as number)}
+                      className={`px-3 py-1.5 text-sm rounded-lg border transition-colors ${
+                        currentPage === p
+                          ? 'bg-blue-600 text-white border-blue-600 font-semibold shadow-sm'
+                          : 'border-gray-200 text-gray-700 bg-white hover:bg-gray-50'
+                      }`}
+                    >
+                      {p}
+                    </button>
+                  )
+                )}
+                {/* Flecha siguiente */}
+                <button
+                  onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                  disabled={currentPage === totalPages}
+                  className="px-2.5 py-1.5 text-sm rounded-lg border border-gray-200 text-gray-600 bg-white hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                >
+                  →
+                </button>
+              </div>
+            </div>
+          );
+        })()}
       </div>
 
       {reporteOrden && (
@@ -639,9 +795,20 @@ export default function AuditoriaClient({ initialData, error }: { initialData: O
                               </span>
                             </div>
 
-                            {/* Comentario */}
+                            {/* Comentario — con prefijo fecha+causal+técnico dentro del mismo párrafo,
+                                para que al copiar el texto quede autocontenido. El comentario original
+                                NO se modifica, solo se le antepone este encabezado dentro del párrafo. */}
                             {h.comentario ? (
-                              <p className="text-sm text-gray-800 mb-3">{h.comentario}</p>
+                              <p className="text-sm text-gray-800 mb-3">
+                                {new Date(h.fecha).toLocaleDateString('es-CO', { timeZone: 'America/Bogota' })}
+                                {' · '}
+                                {badgeLabel}
+                                {h.causal_codigo && causalLabelPorCodigo[h.causal_codigo] ? ` (${causalLabelPorCodigo[h.causal_codigo]})` : ''}
+                                {' · '}
+                                {h.autor_nombre || h.usuario}
+                                {'. '}
+                                {h.comentario}
+                              </p>
                             ) : (
                               <p className="text-xs text-gray-400 italic mb-3">No se registró comentario para esta actualización.</p>
                             )}
@@ -742,6 +909,13 @@ export default function AuditoriaClient({ initialData, error }: { initialData: O
               onClick={() => setLightbox(null)}
             >
               <button
+                onClick={(e) => { e.stopPropagation(); handleDownloadSingle(lightbox.fotos[lightbox.index], `Evidencia_${lightbox.index + 1}.jpg`); }}
+                className="absolute top-5 right-16 text-white/80 hover:text-white"
+                title="Descargar esta foto"
+              >
+                <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+              </button>
+              <button
                 onClick={(e) => { e.stopPropagation(); setLightbox(null); }}
                 className="absolute top-5 right-5 text-white/80 hover:text-white"
               >
@@ -760,7 +934,8 @@ export default function AuditoriaClient({ initialData, error }: { initialData: O
               <img
                 src={lightbox.fotos[lightbox.index]}
                 alt="Evidencia ampliada"
-                className="max-w-full max-h-full rounded-lg object-contain"
+                className="rounded-lg object-contain"
+                style={{ width: '85vw', height: '80vh' }}
                 onClick={(e) => e.stopPropagation()}
               />
 
