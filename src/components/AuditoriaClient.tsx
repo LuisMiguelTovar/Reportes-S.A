@@ -422,7 +422,7 @@ export default function AuditoriaClient() {
     const exportData = allFiltered.map((row: any, idx: number) => {
       const cierre = cierrePorOrden[row.orden_trabajo];
       const causalTexto = cierre?.causal_codigo && causalLabelPorCodigo[cierre.causal_codigo]
-        ? causalLabelPorCodigo[cierre.causal_codigo]
+        ? `${cierre.causal_codigo}-${causalLabelPorCodigo[cierre.causal_codigo]}`
         : '';
       const badgeLabel = row.estado === 'Cancelada' ? 'Incumplida' : row.estado;
 
@@ -904,7 +904,6 @@ export default function AuditoriaClient() {
                                 {new Date(h.fecha).toLocaleDateString('es-CO', { timeZone: 'America/Bogota' })}
                                 {' · '}
                                 {badgeLabel}
-                                {h.causal_codigo && causalLabelPorCodigo[h.causal_codigo] ? ` (${causalLabelPorCodigo[h.causal_codigo]})` : ''}
                                 {' · '}
                                 {h.autor_nombre || h.usuario}
                                 {'. '}

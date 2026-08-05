@@ -1664,7 +1664,8 @@ export default function DespachoTableClient() {
                           multiple
                           onChange={(e) => {
                             if (e.target.files) {
-                              setNuevasFotos(prev => [...prev, ...Array.from(e.target.files!)]);
+                              const archivos = Array.from(e.target.files);
+                              setNuevasFotos(prev => [...prev, ...archivos]);
                               e.target.value = '';
                             }
                           }}
