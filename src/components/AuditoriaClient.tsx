@@ -415,9 +415,9 @@ export default function AuditoriaClient() {
 
     // Cantidad de columnas fijas ANTES de las columnas de fotos (para calcular
     // en qué columna empiezan "Foto 1", "Foto 2", etc.)
-    // Fecha Cierre, Nº Orden, Contrato, Dirección, Barrio, Estado, Técnico,
-    // Causal de Cierre, Comentario = 9 columnas fijas.
-    const NUM_COLUMNAS_FIJAS = 9;
+    // Fecha Cierre, Nº Orden, Contrato, Dirección, Barrio, Tipo de Trabajo,
+    // Estado, Técnico, Causal de Cierre, Comentario = 10 columnas fijas.
+    const NUM_COLUMNAS_FIJAS = 10;
 
     const exportData = allFiltered.map((row: any, idx: number) => {
       const cierre = cierrePorOrden[row.orden_trabajo];
@@ -448,6 +448,7 @@ export default function AuditoriaClient() {
         'Contrato': row.contrato,
         'Dirección': row.direccion || '',
         'Barrio': row.barrio || '',
+        'Tipo de Trabajo': row.descripcion_del_trabajo || '',
         'Estado': row.estado,
         'Técnico': getTecnicoNombre(row.id_tecnico_asignado),
         'Causal de Cierre': causalTexto,
