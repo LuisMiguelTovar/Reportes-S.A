@@ -100,6 +100,7 @@ export default function DespachoTableClient() {
   const [isGuardando, setIsGuardando] = useState(false);
   const [errorGuardar, setErrorGuardar] = useState<string | null>(null);
   const [lightbox, setLightbox] = useState<{ fotos: string[]; index: number } | null>(null);
+  const [zoomLevel, setZoomLevel] = useState(1);
   const [expandedEntries, setExpandedEntries] = useState<Set<number>>(new Set());
 
   // ── Paginación ──
@@ -112,6 +113,10 @@ export default function DespachoTableClient() {
 
   const [isAssigning, setIsAssigning] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+
+  useEffect(() => {
+    setZoomLevel(1);
+  }, [lightbox?.fotos, lightbox?.index]);
 
   useEffect(() => {
     if (reporteOrden) {
@@ -397,6 +402,19 @@ export default function DespachoTableClient() {
     setNuevaFechaProgramada('');
     setNuevasFotos([]);
     setErrorGuardar(null);
+  };
+
+  const handleWheelZoom = (e: React.WheelEvent) => {
+    e.stopPropagation();
+    setZoomLevel((z) => {
+      const next = e.deltaY < 0 ? z + 0.25 : z - 0.25;
+      return Math.min(3, Math.max(1, next));
+    });
+  };
+
+  const handleImageClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setZoomLevel((z) => (z === 1 ? 2 : 1));
   };
 
   const copiarTextoHistorial = (entry: HistorialEntry) => {
@@ -1780,6 +1798,28 @@ export default function DespachoTableClient() {
           className="fixed inset-0 bg-black/80 z-[60] flex items-center justify-center p-4"
           onClick={() => setLightbox(null)}
         >
+          <div
+            className="absolute top-4 left-4 flex items-center gap-1 bg-black/50 rounded-full px-2 py-1.5"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              onClick={() => setZoomLevel((z) => Math.max(1, z - 0.25))}
+              className="text-white/90 hover:text-white w-7 h-7 flex items-center justify-center rounded-full hover:bg-white/10"
+              title="Alejar"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 11h6" /></svg>
+            </button>
+            <span className="text-white/90 text-xs font-medium w-10 text-center select-none">
+              {Math.round(zoomLevel * 100)}%
+            </span>
+            <button
+              onClick={() => setZoomLevel((z) => Math.min(3, z + 0.25))}
+              className="text-white/90 hover:text-white w-7 h-7 flex items-center justify-center rounded-full hover:bg-white/10"
+              title="Acercar"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 8v6M8 11h6" /></svg>
+            </button>
+          </div>
           <button
             onClick={() => setLightbox(null)}
             className="absolute top-4 right-4 text-white/80 hover:text-white transition-colors"
@@ -1798,13 +1838,25 @@ export default function DespachoTableClient() {
             </button>
           )}
 
-          <img
-            src={lightbox.fotos[lightbox.index]}
-            alt="Evidencia ampliada"
-            className="rounded-lg object-contain"
-            style={{ maxWidth: 'min(900px, 85vw)', maxHeight: '75vh', width: 'auto', height: 'auto' }}
+          <div
+            className="overflow-auto rounded-lg"
+            style={{ width: 'min(900px, 85vw)', height: '75vh' }}
+            onWheel={handleWheelZoom}
             onClick={(e) => e.stopPropagation()}
-          />
+          >
+            <img
+              src={lightbox.fotos[lightbox.index]}
+              alt="Evidencia ampliada"
+              onClick={handleImageClick}
+              className="rounded-lg object-contain mx-auto"
+              style={{
+                width: `${100 * zoomLevel}%`,
+                height: `${100 * zoomLevel}%`,
+                cursor: zoomLevel > 1 ? 'zoom-out' : 'zoom-in',
+                transition: 'width 150ms ease, height 150ms ease',
+              }}
+            />
+          </div>
 
           {lightbox.fotos.length > 1 && (
             <button
