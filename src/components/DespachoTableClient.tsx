@@ -60,6 +60,18 @@ const formatRol = (rol?: string): string => {
   return rol;
 };
 
+/// Formatea una fecha PURA (sin hora, tipo "2026-08-18") a "DD/MM/AAAA"
+/// sin pasar por `Date`/timezone — evita el desfase de -1 día que ocurre
+/// al interpretar fechas-sin-hora como UTC y luego convertirlas a hora
+/// local de Colombia.
+function formatearFechaPura(fecha?: string | null): string {
+  if (!fecha) return '—';
+  const soloFecha = fecha.split('T')[0]; // por si viniera con hora pegada
+  const [year, month, day] = soloFecha.split('-');
+  if (!year || !month || !day) return '—';
+  return `${day}/${month}/${year}`;
+}
+
 const formatBarrio = (barrio?: string): string => {
   if (!barrio) return '-';
   // Elimina prefijos tipo "5376 - " o "5376-" dejando solo el nombre
@@ -425,7 +437,7 @@ export default function DespachoTableClient() {
     if (entry.comentario) partes.push(`Comentario: ${entry.comentario}`);
     if (entry.atendido_por) partes.push(`Atendido por: ${entry.atendido_por}`);
     if (entry.estado === 'Programada' && entry.fecha_programada) {
-      partes.push(`Fecha estimada de atención: ${new Date(entry.fecha_programada).toLocaleDateString('es-CO', { timeZone: 'America/Bogota' })}`);
+      partes.push(`Fecha estimada de atención: ${formatearFechaPura(entry.fecha_programada)}`);
     }
     const texto = partes.join('\n');
     navigator.clipboard.writeText(texto);
@@ -716,9 +728,7 @@ export default function DespachoTableClient() {
       const nombre = getTecnicoNombre(row.id_tecnico_asignado as string);
       const estadoAsig = !nombre ? 'Sin asignar' : nombre === 'Programado' ? 'Programado' : 'Asignada';
       const tecnicoDisplay = nombre === 'Programado' ? '—' : (nombre || 'Sin asignar');
-      const fechaProg = row.fecha_programada
-        ? new Date(row.fecha_programada).toLocaleDateString('es-CO', { timeZone: 'America/Bogota' })
-        : '—';
+      const fechaProg = formatearFechaPura(row.fecha_programada);
       return [
         row.orden_trabajo || '',
         row.contrato || '',
@@ -962,9 +972,7 @@ export default function DespachoTableClient() {
                       })()}
                     </td>
                     <td className="py-2.5 px-2.5 whitespace-nowrap">
-                      {row.fecha_programada
-                        ? new Date(row.fecha_programada).toLocaleDateString('es-CO', { timeZone: 'America/Bogota' })
-                        : '—'}
+                      {formatearFechaPura(row.fecha_programada)}
                     </td>
                     <td className="py-2.5 px-2.5">
                       {tecDisplay ? (
@@ -1269,9 +1277,7 @@ export default function DespachoTableClient() {
                   <div style={{ background: '#FFFBEB', borderRadius: '14px', padding: '16px', border: '1px solid #F59E0B' }}>
                     <p style={{ fontSize: '12px', fontWeight: 600, color: '#B45309', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '4px' }}>Fecha programada</p>
                     <p style={{ fontSize: '15px', fontWeight: 500, color: '#92400E', margin: 0 }}>
-                      {reporteOrden.fecha_programada
-                        ? new Date(reporteOrden.fecha_programada).toLocaleDateString('es-CO', { timeZone: 'America/Bogota' })
-                        : '—'}
+                      {formatearFechaPura(reporteOrden.fecha_programada)}
                     </p>
                   </div>
                 )}
