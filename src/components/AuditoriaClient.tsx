@@ -8,6 +8,15 @@ import { supabase } from '@/lib/supabase';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
 
+interface ItemReporte {
+  id: string;
+  codigo: string;
+  descripcion: string;
+  precio_unitario: number;
+  cantidad: number;
+  subtotal: number;
+}
+
 type Orden = {
   orden_trabajo: string;
   contrato: string;
@@ -42,6 +51,8 @@ export default function AuditoriaClient() {
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [reporteOrden, setReporteOrden] = useState<Orden | null>(null);
+  const [itemsReporte, setItemsReporte] = useState<ItemReporte[]>([]);
+  const [cargandoItems, setCargandoItems] = useState(false);
   const [lightbox, setLightbox] = useState<{ fotos: string[]; index: number } | null>(null);
   const [zoomLevel, setZoomLevel] = useState(1);
   const [historialAuditoria, setHistorialAuditoria] = useState<any[]>([]);
@@ -76,6 +87,8 @@ export default function AuditoriaClient() {
           } else {
             setReporteOrden(null);
             setHistorialAuditoria([]);
+            setItemsReporte([]);
+            setCargandoItems(false);
           }
         } else if (lightbox && e.key === 'ArrowLeft' && lightbox.fotos.length > 1) {
           setLightbox({ ...lightbox, index: (lightbox.index - 1 + lightbox.fotos.length) % lightbox.fotos.length });
@@ -94,6 +107,29 @@ export default function AuditoriaClient() {
   useEffect(() => {
     setZoomLevel(1);
   }, [lightbox?.fotos, lightbox?.index]);
+
+  const abrirReporte = async (row: Orden) => {
+    setReporteOrden(row);
+    // Cargar ítems del reporte si la orden es Efectiva
+    if (row.estado === 'Efectiva') {
+      setCargandoItems(true);
+      setItemsReporte([]);
+      try {
+        const { data, error } = await supabase
+          .from('items_reporte')
+          .select('id, codigo, descripcion, precio_unitario, cantidad, subtotal')
+          .eq('orden_trabajo', row.orden_trabajo)
+          .order('creado_en', { ascending: true });
+        if (!error && data) setItemsReporte(data as ItemReporte[]);
+      } catch (e) {
+        console.error('Error al cargar ítems del reporte:', e);
+      } finally {
+        setCargandoItems(false);
+      }
+    } else {
+      setItemsReporte([]);
+    }
+  };
 
   const fetchHistorialAuditoria = async (ordenTrabajo: string) => {
     setLoadingHistorialAuditoria(true);
@@ -713,7 +749,7 @@ export default function AuditoriaClient() {
                             <button
                               className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-blue-700 hover:bg-blue-50 transition-colors"
                               onClick={() => {
-                                setReporteOrden(row);
+                                abrirReporte(row);
                                 fetchHistorialAuditoria(row.orden_trabajo);
                                 setOpenMenuId(null);
                                 setMenuPosition(null);
@@ -822,7 +858,7 @@ export default function AuditoriaClient() {
               <div className="flex items-center justify-between p-5 pb-3">
                 <h3 className="text-xl font-bold text-slate-800">Reporte de la Orden #{reporteOrden.orden_trabajo}</h3>
                 <button
-                  onClick={() => { setReporteOrden(null); setHistorialAuditoria([]); }}
+                  onClick={() => { setReporteOrden(null); setHistorialAuditoria([]); setItemsReporte([]); setCargandoItems(false); }}
                   className="text-gray-400 hover:bg-gray-100 hover:text-red-500 rounded-full p-1.5 transition-colors"
                 >
                   <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
@@ -868,8 +904,167 @@ export default function AuditoriaClient() {
 
             {/* Cuerpo con scroll interno */}
             <div className="flex-1 overflow-y-auto p-5 bg-gray-50">
-              <h4 className="text-base font-bold text-slate-800 mb-1">Bitácora de atención</h4>
-              <p className="text-sm text-gray-500 mb-4">Historial de comentarios y evidencias registrados durante la atención de la orden.</p>
+
+            {/* ── Ítems ejecutados (solo para órdenes Efectiva con ítems) ── */}
+            {reporteOrden.estado === 'Efectiva' && (cargandoItems || itemsReporte.length > 0) && (
+              <div style={{
+                background: '#F8FAFF',
+                borderRadius: 12,
+                padding: '20px',
+                marginBottom: 20,
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+                  {/* Título izquierda */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <div style={{
+                      width: 36, height: 36,
+                      background: '#EEF2FF',
+                      borderRadius: 10,
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    }}>
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#1A3A6B" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
+                      </svg>
+                    </div>
+                    <div>
+                      <p style={{ margin: 0, fontWeight: 700, fontSize: 15, color: '#1A1A2E' }}>
+                        Ítems ejecutados
+                      </p>
+                      <p style={{ margin: 0, fontSize: 12, color: '#9CA3AF' }}>
+                        Servicios realizados por el técnico en la orden.
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Stats derecha: total ítems + cuotas */}
+                  <div style={{ display: 'flex', gap: 10 }}>
+                    {/* Total de ítems */}
+                    {!cargandoItems && itemsReporte.length > 0 && (
+                      <div style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 8,
+                        background: 'white',
+                        border: '1px solid #E8EDF5',
+                        borderRadius: 10,
+                        padding: '8px 14px',
+                      }}>
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#1A3A6B" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>
+                        </svg>
+                        <div>
+                          <p style={{ margin: 0, fontSize: 10, color: '#9CA3AF', fontWeight: 600 }}>Total de ítems ejecutados</p>
+                          <p style={{ margin: 0, fontSize: 18, fontWeight: 800, color: '#1A3A6B', lineHeight: 1.2 }}>
+                            {itemsReporte.length}
+                          </p>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Cuotas del servicio */}
+                    {reporteOrden.numero_cuotas != null && (
+                      <div style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 8,
+                        background: 'white',
+                        border: '1px solid #E8EDF5',
+                        borderRadius: 10,
+                        padding: '8px 14px',
+                      }}>
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#1A3A6B" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <rect x="1" y="4" width="22" height="16" rx="2" ry="2"/><line x1="1" y1="10" x2="23" y2="10"/>
+                        </svg>
+                        <div>
+                          <p style={{ margin: 0, fontSize: 10, color: '#9CA3AF', fontWeight: 600 }}>Cuotas del servicio</p>
+                          <p style={{ margin: 0, fontSize: 18, fontWeight: 800, color: '#1A3A6B', lineHeight: 1.2 }}>
+                            {reporteOrden.numero_cuotas}
+                          </p>
+                          <p style={{ margin: 0, fontSize: 10, color: '#9CA3AF' }}>(Solo visualización)</p>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {cargandoItems ? (
+                  <div style={{ textAlign: 'center', padding: '20px', color: '#9CA3AF', fontSize: 14 }}>
+                    Cargando ítems...
+                  </div>
+                ) : itemsReporte.length === 0 ? (
+                  <div style={{ textAlign: 'center', padding: '16px', color: '#9CA3AF', fontSize: 13 }}>
+                    Sin ítems registrados.
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                    {itemsReporte.map((item) => (
+                      <div key={item.id} style={{
+                        background: 'white',
+                        borderRadius: 10,
+                        padding: '14px 16px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 14,
+                        border: '1px solid #E8EDF5',
+                      }}>
+                        <div style={{
+                          width: 36, height: 36,
+                          background: '#EEF2FF',
+                          borderRadius: 8,
+                          display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          flexShrink: 0,
+                        }}>
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#1A3A6B" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
+                          </svg>
+                        </div>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <p style={{ margin: 0, fontWeight: 700, fontSize: 14, color: '#1A1A2E' }}>
+                            {item.descripcion}
+                          </p>
+                          <p style={{ margin: '3px 0 0', fontSize: 12, color: '#1A3A6B', fontWeight: 500 }}>
+                            Cód. {item.codigo} • ${item.precio_unitario.toLocaleString('es-CO')}
+                          </p>
+                        </div>
+                        <div style={{
+                          background: '#F0F4FF',
+                          borderRadius: 8,
+                          padding: '8px 16px',
+                          textAlign: 'center',
+                          flexShrink: 0,
+                        }}>
+                          <p style={{ margin: 0, fontSize: 11, color: '#9CA3AF', fontWeight: 600 }}>
+                            Cantidad
+                          </p>
+                          <p style={{ margin: '2px 0 0', fontSize: 22, fontWeight: 800, color: '#1A3A6B' }}>
+                            {item.cantidad}
+                          </p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+{/* Fotos (sin tarjeta de cuotas al lado) */}
+<div>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+      <div style={{
+        width: 36, height: 36,
+        background: '#EEF2FF',
+        borderRadius: 10,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+      }}>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#1A3A6B" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/>
+        </svg>
+      </div>
+      <div>
+        <p style={{ margin: 0, fontWeight: 700, fontSize: 15, color: '#1A1A2E' }}>Fotos del trabajo</p>
+        <p style={{ margin: 0, fontSize: 12, color: '#9CA3AF' }}>Evidencias fotográficas registradas en la atención de la orden.</p>
+      </div>
+    </div>
 
               {loadingHistorialAuditoria ? (
                 <div className="flex justify-center py-10">
@@ -967,53 +1162,39 @@ export default function AuditoriaClient() {
                 </div>
               )}
 
-              {/* También incluir las fotos de Efectiva (urls_fotos) como una entrada final si existen y no vinieron de historial_ordenes */}
-              {reporteOrden.urls_fotos && reporteOrden.urls_fotos.length > 0 && (
-                <div className="relative pl-6 mt-3">
-                  <div className="relative">
-                    <div className={`absolute -left-[19px] top-4 w-3 h-3 rounded-full bg-green-500 ring-4 ring-green-100`} />
-                    <div className="bg-white rounded-[10px] border border-gray-100 p-4">
-                      <div className="flex flex-wrap items-center gap-2 mb-2">
-                        <span className="inline-block px-2 py-0.5 rounded-full text-xs font-semibold border bg-green-50 text-green-700 border-green-200">
-                          Efectiva
-                        </span>
-                        <span className="text-xs text-gray-400">
-                          {reporteOrden.fecha_cierre ? new Date(reporteOrden.fecha_cierre).toLocaleString('es-CO', { timeZone: 'America/Bogota', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true }) : ''}
-                        </span>
-                      </div>
-                      <p className="text-xs text-gray-400 italic mb-3">No se registró comentario para esta actualización.</p>
-                      <div>
-                        <p className="text-xs text-gray-500 font-medium mb-1.5">Evidencias ({reporteOrden.urls_fotos.length})</p>
-                        <div className="grid grid-cols-3 gap-2" style={{ maxWidth: '480px' }}>
-                          {reporteOrden.urls_fotos.map((url, fotoIdx) => (
-                            <div
-                              key={fotoIdx}
-                              className="relative group cursor-pointer"
-                              onClick={() => setLightbox({ fotos: reporteOrden.urls_fotos!, index: fotoIdx })}
-                            >
-                              <img src={url} alt={`Evidencia ${fotoIdx + 1}`} className="rounded-lg object-cover w-full" style={{ height: '105px' }} />
-                              <div className="absolute inset-0 rounded-lg bg-black/0 group-hover:bg-black/20 transition-colors flex items-center justify-center">
-                                <svg className="w-5 h-5 text-white opacity-0 group-hover:opacity-100 transition-opacity" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-5v4m0-4h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" /></svg>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              )}
 
               {/* Caja informativa */}
               <div className="bg-blue-50 border border-blue-100 rounded-xl p-3 text-xs text-blue-700 mt-4">
                 ℹ️ Los comentarios y evidencias fueron registrados desde la aplicación móvil durante la atención de la orden.
               </div>
+  </div> {/* Fin columna de fotos */}
+
+            {/* Nota informativa */}
+            {reporteOrden.estado === 'Efectiva' && itemsReporte.length > 0 && (
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 10,
+                padding: '12px 16px',
+                background: '#F0F4FF',
+                borderRadius: 10,
+                marginTop: 16,
+              }}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#1A3A6B" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+                </svg>
+                <p style={{ margin: 0, fontSize: 12, color: '#1A3A6B' }}>
+                  La información de ítems y cuotas es solo de referencia y no puede ser editada desde este panel.
+                </p>
+              </div>
+            )}
+
             </div>
 
             {/* Footer fijo — solo consulta, sin acciones de edición */}
             <div className="shrink-0 flex justify-end p-4 border-t border-gray-100 bg-white">
               <button
-                onClick={() => { setReporteOrden(null); setHistorialAuditoria([]); }}
+                onClick={() => { setReporteOrden(null); setHistorialAuditoria([]); setItemsReporte([]); setCargandoItems(false); }}
                 className="px-5 py-2 border border-gray-300 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50"
               >
                 Cerrar

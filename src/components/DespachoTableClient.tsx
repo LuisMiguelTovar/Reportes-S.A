@@ -7,6 +7,15 @@ import UploadExcelButton from '@/components/UploadExcelButton';
 import UserProfile from '@/components/UserProfile';
 import NotificationsBell from '@/components/NotificationsBell';
 
+interface ItemReporte {
+  id: string;
+  codigo: string;
+  descripcion: string;
+  precio_unitario: number;
+  cantidad: number;
+  subtotal: number;
+}
+
 type Orden = {
   orden_trabajo: string;
   contrato: string;
@@ -103,6 +112,8 @@ export default function DespachoTableClient() {
 
   // ── Modal Reporte ──
   const [reporteOrden, setReporteOrden] = useState<Orden | null>(null);
+  const [itemsReporte, setItemsReporte] = useState<ItemReporte[]>([]);
+  const [cargandoItems, setCargandoItems] = useState(false);
   const [historial, setHistorial] = useState<HistorialEntry[]>([]);
   const [loadingHistorial, setLoadingHistorial] = useState(false);
   const [nuevoComentario, setNuevoComentario] = useState('');
@@ -140,6 +151,8 @@ export default function DespachoTableClient() {
           } else {
             setReporteOrden(null);
             setHistorial([]);
+            setItemsReporte([]);
+            setCargandoItems(false);
             setNuevoComentario('');
             setNuevoEstado(null);
             setNuevaFechaProgramada('');
@@ -394,7 +407,7 @@ export default function DespachoTableClient() {
   }, []);
 
   // Abrir modal de reporte
-  const openReporte = useCallback((orden: Orden) => {
+  const abrirReporte = async (orden: Orden) => {
     setReporteOrden(orden);
     setNuevoComentario('');
     setNuevoEstado(null);
@@ -403,12 +416,34 @@ export default function DespachoTableClient() {
     setErrorGuardar(null);
     setExpandedEntries(new Set());
     fetchHistorial(orden.orden_trabajo);
-  }, [fetchHistorial]);
+    
+    // Cargar ítems del reporte si la orden es Efectiva
+    if (orden.estado === 'Efectiva') {
+      setCargandoItems(true);
+      setItemsReporte([]);
+      try {
+        const { data, error } = await supabase
+          .from('items_reporte')
+          .select('id, codigo, descripcion, precio_unitario, cantidad, subtotal')
+          .eq('orden_trabajo', orden.orden_trabajo)
+          .order('creado_en', { ascending: true });
+        if (!error && data) setItemsReporte(data as ItemReporte[]);
+      } catch (e) {
+        console.error('Error al cargar ítems del reporte:', e);
+      } finally {
+        setCargandoItems(false);
+      }
+    } else {
+      setItemsReporte([]);
+    }
+  };
 
   // Cerrar modal de reporte
   const closeReporte = () => {
     setReporteOrden(null);
     setHistorial([]);
+    setItemsReporte([]);
+    setCargandoItems(false);
     setNuevoComentario('');
     setNuevoEstado(null);
     setNuevaFechaProgramada('');
@@ -1018,7 +1053,7 @@ export default function DespachoTableClient() {
                         >
                           <button
                             className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
-                            onClick={() => { openReporte(row); setOpenMenuId(null); setMenuPosition(null); }}
+                            onClick={() => { abrirReporte(row); setOpenMenuId(null); setMenuPosition(null); }}
                           >
                             <svg className="w-4 h-4 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
                             Ver Reporte
@@ -1291,15 +1326,171 @@ export default function DespachoTableClient() {
 
 
 
+              {/* ── Ítems ejecutados (solo para órdenes Efectiva con ítems) ── */}
+              {reporteOrden.estado === 'Efectiva' && (cargandoItems || itemsReporte.length > 0) && (
+                <div style={{
+                  background: '#F8FAFF',
+                  borderRadius: 12,
+                  padding: '20px',
+                  marginBottom: 20,
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+                    {/* Título izquierda */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                      <div style={{
+                        width: 36, height: 36,
+                        background: '#EEF2FF',
+                        borderRadius: 10,
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      }}>
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#1A3A6B" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
+                        </svg>
+                      </div>
+                      <div>
+                        <p style={{ margin: 0, fontWeight: 700, fontSize: 15, color: '#1A1A2E' }}>
+                          Ítems ejecutados
+                        </p>
+                        <p style={{ margin: 0, fontSize: 12, color: '#9CA3AF' }}>
+                          Servicios realizados por el técnico en la orden.
+                        </p>
+                      </div>
+                    </div>
+
+                    {/* Stats derecha: total ítems + cuotas */}
+                    <div style={{ display: 'flex', gap: 10 }}>
+                      {/* Total de ítems */}
+                      {!cargandoItems && itemsReporte.length > 0 && (
+                        <div style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 8,
+                          background: 'white',
+                          border: '1px solid #E8EDF5',
+                          borderRadius: 10,
+                          padding: '8px 14px',
+                        }}>
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#1A3A6B" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>
+                          </svg>
+                          <div>
+                            <p style={{ margin: 0, fontSize: 10, color: '#9CA3AF', fontWeight: 600 }}>Total de ítems ejecutados</p>
+                            <p style={{ margin: 0, fontSize: 18, fontWeight: 800, color: '#1A3A6B', lineHeight: 1.2 }}>
+                              {itemsReporte.length}
+                            </p>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Cuotas del servicio */}
+                      {reporteOrden.numero_cuotas != null && (
+                        <div style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 8,
+                          background: 'white',
+                          border: '1px solid #E8EDF5',
+                          borderRadius: 10,
+                          padding: '8px 14px',
+                        }}>
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#1A3A6B" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <rect x="1" y="4" width="22" height="16" rx="2" ry="2"/><line x1="1" y1="10" x2="23" y2="10"/>
+                          </svg>
+                          <div>
+                            <p style={{ margin: 0, fontSize: 10, color: '#9CA3AF', fontWeight: 600 }}>Cuotas del servicio</p>
+                            <p style={{ margin: 0, fontSize: 18, fontWeight: 800, color: '#1A3A6B', lineHeight: 1.2 }}>
+                              {reporteOrden.numero_cuotas}
+                            </p>
+                            <p style={{ margin: 0, fontSize: 10, color: '#9CA3AF' }}>(Solo visualización)</p>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {cargandoItems ? (
+                    <div style={{ textAlign: 'center', padding: '20px', color: '#9CA3AF', fontSize: 14 }}>
+                      Cargando ítems...
+                    </div>
+                  ) : itemsReporte.length === 0 ? (
+                    <div style={{ textAlign: 'center', padding: '16px', color: '#9CA3AF', fontSize: 13 }}>
+                      Sin ítems registrados.
+                    </div>
+                  ) : (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                      {itemsReporte.map((item) => (
+                        <div key={item.id} style={{
+                          background: 'white',
+                          borderRadius: 10,
+                          padding: '14px 16px',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 14,
+                          border: '1px solid #E8EDF5',
+                        }}>
+                          <div style={{
+                            width: 36, height: 36,
+                            background: '#EEF2FF',
+                            borderRadius: 8,
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            flexShrink: 0,
+                          }}>
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#1A3A6B" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
+                            </svg>
+                          </div>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <p style={{ margin: 0, fontWeight: 700, fontSize: 14, color: '#1A1A2E' }}>
+                              {item.descripcion}
+                            </p>
+                            <p style={{ margin: '3px 0 0', fontSize: 12, color: '#1A3A6B', fontWeight: 500 }}>
+                              Cód. {item.codigo} • ${item.precio_unitario.toLocaleString('es-CO')}
+                            </p>
+                          </div>
+                          <div style={{
+                            background: '#F0F4FF',
+                            borderRadius: 8,
+                            padding: '8px 16px',
+                            textAlign: 'center',
+                            flexShrink: 0,
+                          }}>
+                            <p style={{ margin: 0, fontSize: 11, color: '#9CA3AF', fontWeight: 600 }}>
+                              Cantidad
+                            </p>
+                            <p style={{ margin: '2px 0 0', fontSize: 22, fontWeight: 800, color: '#1A3A6B' }}>
+                              {item.cantidad}
+                            </p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+{/* Fotos (sin tarjeta de cuotas al lado) */}
+<div>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+      <div style={{
+        width: 36, height: 36,
+        background: '#EEF2FF',
+        borderRadius: 10,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+      }}>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#1A3A6B" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/>
+        </svg>
+      </div>
+      <div>
+        <p style={{ margin: 0, fontWeight: 700, fontSize: 15, color: '#1A1A2E' }}>Fotos del trabajo</p>
+        <p style={{ margin: 0, fontSize: 12, color: '#9CA3AF' }}>Evidencias fotográficas registradas en la atención de la orden.</p>
+      </div>
+    </div>
+
               {/* ══════════════════════════════════════════════════════════
                   HISTORIAL DE ATENCIÓN
                  ══════════════════════════════════════════════════════════ */}
               <div style={{ marginTop: '8px' }}>
-                <h3 style={{ fontSize: '16px', fontWeight: 700, color: '#111827', marginBottom: '4px' }}>Historial de Atención</h3>
-                <p style={{ fontSize: '13px', color: '#6B7280', marginBottom: '16px' }}>
-                  Registro cronológico de actualizaciones de la orden.
-                </p>
-
                 {loadingHistorial ? (
                   <div className="flex items-center justify-center py-10">
                     <svg className="animate-spin h-6 w-6" style={{ color: '#1A4D8F' }} xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
@@ -1506,6 +1697,7 @@ export default function DespachoTableClient() {
                   </div>
                 )}
               </div>
+  </div> {/* Fin columna de fotos */}
 
               {/* ══════════════════════════════════════════════════════════
                   AGREGAR NUEVA ACTUALIZACIÓN
@@ -1748,6 +1940,26 @@ export default function DespachoTableClient() {
                 )}
               </div>
             </div>
+
+            {/* Nota informativa */}
+            {reporteOrden.estado === 'Efectiva' && itemsReporte.length > 0 && (
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 10,
+                padding: '12px 16px',
+                background: '#F0F4FF',
+                borderRadius: 10,
+                marginTop: 16,
+              }}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#1A3A6B" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+                </svg>
+                <p style={{ margin: 0, fontSize: 12, color: '#1A3A6B' }}>
+                  La información de ítems y cuotas es solo de referencia y no puede ser editada desde este panel.
+                </p>
+              </div>
+            )}
 
             {/* ── Footer ── */}
             <div style={{
