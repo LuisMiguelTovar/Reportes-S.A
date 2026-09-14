@@ -1163,6 +1163,49 @@ export default function AuditoriaClient() {
                 </div>
               )}
 
+              {/* Fotos desde urls_fotos como respaldo cuando el historial no tiene fotos */}
+              {(() => {
+                // Verificar si el historial ya tiene alguna entrada con fotos
+                const historialTieneFoots = historialAuditoria.some(
+                  (h: any) => h.fotos && h.fotos.length > 0
+                );
+                
+                // Solo mostrar este bloque si:
+                // 1. El historial NO tiene fotos (app antigua), Y
+                // 2. La orden SÍ tiene urls_fotos
+                const urlsFotos: string[] = reporteOrden.urls_fotos || [];
+                
+                if (historialTieneFoots || urlsFotos.length === 0) return null;
+                
+                return (
+                  <div className="mt-4">
+                    <p className="text-xs text-gray-500 font-medium mb-2">
+                      Evidencias ({urlsFotos.length})
+                    </p>
+                    <div className="grid grid-cols-3 gap-2" style={{ maxWidth: '480px' }}>
+                      {urlsFotos.map((url: string, fotoIdx: number) => (
+                        <div
+                          key={fotoIdx}
+                          className="relative group cursor-pointer"
+                          onClick={() => setLightbox({ fotos: urlsFotos, index: fotoIdx })}
+                        >
+                          <img
+                            src={url}
+                            alt={`Evidencia ${fotoIdx + 1}`}
+                            className="rounded-lg object-cover w-full"
+                            style={{ height: '105px' }}
+                          />
+                          <div className="absolute inset-0 rounded-lg bg-black/0 group-hover:bg-black/20 transition-colors flex items-center justify-center">
+                            <svg className="w-5 h-5 text-white opacity-0 group-hover:opacity-100 transition-opacity" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-5v4m0-4h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
+                            </svg>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
 
               {/* Caja informativa */}
               <div className="bg-blue-50 border border-blue-100 rounded-xl p-3 text-xs text-blue-700 mt-4">
