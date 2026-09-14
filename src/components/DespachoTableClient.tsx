@@ -30,6 +30,7 @@ type Orden = {
   observacion_programacion?: string;
   observacion_solicitud?: string;
   fecha_cierre?: string;
+  numero_cuotas?: number | null;
   [key: string]: unknown;
 };
 

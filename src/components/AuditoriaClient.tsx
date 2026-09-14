@@ -28,6 +28,7 @@ type Orden = {
   direccion?: string;
   barrio?: string;
   urls_fotos?: string[];
+  numero_cuotas?: number | null;
   [key: string]: any;
 };
 
@@ -485,7 +486,7 @@ export default function AuditoriaClient() {
         const fechaTexto = cierre.fecha
           ? new Date(cierre.fecha).toLocaleDateString('es-CO', { timeZone: 'America/Bogota' })
           : '';
-        comentarioCompleto = `${fechaTexto} · ${badgeLabel}${causalTexto ? ` (${causalTexto})` : ''} · ${cierre.autorNombre || ''}. ${cierre.comentario}`;
+        comentarioCompleto = `${fechaTexto} · ${badgeLabel}${causalTexto ? ` (${causalTexto})` : ''} · ${cierre.autorNombre || ''} / ${cierre.comentario}`;
       }
 
       const fila: Record<string, string> = {
@@ -1120,7 +1121,7 @@ export default function AuditoriaClient() {
                                 {badgeLabel}
                                 {' · '}
                                 {h.autor_nombre || h.usuario}
-                                {'. '}
+                                {' / '}
                                 {h.comentario}
                               </p>
                             ) : (
