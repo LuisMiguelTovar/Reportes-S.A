@@ -188,7 +188,7 @@ export default function AuditoriaClient() {
       const { data, error } = await supabase
         .from('perfiles')
         .select('id_usuario, nombre')
-        .eq('rol', 'Técnico');
+        .in('rol', ['Técnico', 'Supervisor']);
       if (!error && data) {
         setTecnicos(data);
       }

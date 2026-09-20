@@ -590,7 +590,7 @@ export default function DespachoTableClient() {
       const { data, error } = await supabase
         .from('perfiles')
         .select('id_usuario, nombre')
-        .eq('rol', 'Técnico')
+        .in('rol', ['Técnico', 'Supervisor'])
         .order('nombre', { ascending: true });
 
       if (!error && data) {
