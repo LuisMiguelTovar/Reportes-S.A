@@ -88,6 +88,115 @@ const formatBarrio = (barrio?: string): string => {
   return barrio.replace(/^\s*\d+\s*-\s*/, '').trim() || barrio;
 };
 
+function ExcelColumnFilter({
+  options,
+  selected,
+  onApply,
+  onCancel,
+  panelRef,
+}: {
+  options: { value: string; label: string }[];
+  selected: Set<string> | null; // null = todas
+  onApply: (next: Set<string> | null) => void;
+  onCancel: () => void;
+  panelRef?: React.RefObject<HTMLDivElement | null>;
+}) {
+  const allValues = useMemo(() => options.map(o => o.value), [options]);
+  const [search, setSearch] = useState('');
+  const [checked, setChecked] = useState<Set<string>>(() => new Set(selected ?? allValues));
+
+  // Al escribir en el buscador, los valores que YA NO coinciden deben salir
+  // de la selección (no solo ocultarse). Sin esto, si el usuario busca "102"
+  // y da Aceptar sin tocar checkboxes, el conteo de marcados sigue siendo
+  // igual al total de opciones y el filtro se interpreta como "todo
+  // seleccionado" → no filtra nada, aunque en pantalla solo se vea "102664".
+  useEffect(() => {
+    setChecked(prev => {
+      const matching = new Set(
+        options
+          .filter(o => o.label.toLowerCase().includes(search.toLowerCase()))
+          .map(o => o.value)
+      );
+      const next = new Set<string>();
+      prev.forEach(v => { if (matching.has(v)) next.add(v); });
+      return next;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search]);
+
+  const filteredOptions = useMemo(
+    () => options.filter(o => o.label.toLowerCase().includes(search.toLowerCase())),
+    [options, search]
+  );
+
+  const allFilteredChecked = filteredOptions.length > 0 && filteredOptions.every(o => checked.has(o.value));
+
+  const toggleAllFiltered = () => {
+    setChecked(prev => {
+      const next = new Set(prev);
+      if (allFilteredChecked) {
+        filteredOptions.forEach(o => next.delete(o.value));
+      } else {
+        filteredOptions.forEach(o => next.add(o.value));
+      }
+      return next;
+    });
+  };
+
+  const toggleOne = (value: string) => {
+    setChecked(prev => {
+      const next = new Set(prev);
+      if (next.has(value)) next.delete(value); else next.add(value);
+      return next;
+    });
+  };
+
+  return (
+    <div
+      ref={panelRef}
+      className="absolute z-30 top-full left-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg p-2 normal-case font-normal text-gray-700"
+      style={{ width: '240px' }}
+    >
+      <input
+        type="text"
+        autoFocus
+        placeholder="Buscar..."
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+        className="w-full border border-gray-200 rounded-md px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 mb-2"
+      />
+      <label className="flex items-center gap-2 px-1 py-1 text-xs font-semibold text-gray-700 border-b border-gray-100 mb-1 cursor-pointer">
+        <input type="checkbox" checked={allFilteredChecked} onChange={toggleAllFiltered} className="rounded" />
+        (Seleccionar todo)
+      </label>
+      <div className="max-h-48 overflow-y-auto flex flex-col gap-0.5">
+        {filteredOptions.length === 0 ? (
+          <p className="text-xs text-gray-400 px-1 py-2">Sin resultados</p>
+        ) : (
+          filteredOptions.map(opt => (
+            <label key={opt.value} className="flex items-center gap-2 px-1 py-1 text-xs text-gray-600 hover:bg-gray-50 rounded cursor-pointer">
+              <input type="checkbox" checked={checked.has(opt.value)} onChange={() => toggleOne(opt.value)} className="rounded" />
+              <span className="truncate">{opt.label}</span>
+            </label>
+          ))
+        )}
+      </div>
+      <div className="flex items-center justify-between gap-2 pt-2 mt-1 border-t border-gray-100">
+        <button type="button" onClick={onCancel} className="text-xs text-gray-500 hover:text-gray-700 px-2 py-1">
+          Cancelar
+        </button>
+        <button
+          type="button"
+          onClick={() => onApply(checked.size === allValues.length ? null : new Set(checked))}
+          className="text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-md px-3 py-1.5"
+        >
+          Aceptar
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function DespachoTableClient() {
   const { user } = useAuth();
 
@@ -101,6 +210,28 @@ export default function DespachoTableClient() {
   const [fechaFilter, setFechaFilter] = useState('Todas');
   const [tecnicoFilter, setTecnicoFilter] = useState('Todos');
   const [estadoFilter, setEstadoFilter] = useState('Todos');
+
+  // ── Filtros tipo Excel en encabezados de columna (selección múltiple) ──
+  // Cada uno: null = "todas las opciones" (sin filtro). Set<string> = solo esos valores están incluidos.
+  type ExcelFilterKey = 'orden' | 'contrato' | 'ubicacion' | 'trabajo' | 'estado' | 'sla' | 'fechaProg' | 'tecnico';
+
+  const [openColumnFilter, setOpenColumnFilter] = useState<ExcelFilterKey | null>(null);
+  const columnFilterRef = useRef<HTMLDivElement>(null);
+
+  const [ordenSelected, setOrdenSelected] = useState<Set<string> | null>(null);
+  const [contratoSelected, setContratoSelected] = useState<Set<string> | null>(null);
+  const [ubicacionSelected, setUbicacionSelected] = useState<Set<string> | null>(null);
+  const [trabajoSelected, setTrabajoSelected] = useState<Set<string> | null>(null);
+  const [estadoColSelected, setEstadoColSelected] = useState<Set<string> | null>(null);
+  const [slaSelected, setSlaSelected] = useState<Set<string> | null>(null);
+  const [fechaProgSelected, setFechaProgSelected] = useState<Set<string> | null>(null);
+  const [tecnicoColSelected, setTecnicoColSelected] = useState<Set<string> | null>(null);
+
+  // Opciones únicas para cada checklist (se cargan junto con localidadesUnicas/descripcionesUnicas)
+  const [ordenesUnicas, setOrdenesUnicas] = useState<string[]>([]);
+  const [contratosUnicos, setContratosUnicos] = useState<string[]>([]);
+  const [slaDiasUnicos, setSlaDiasUnicos] = useState<string[]>([]);
+  const [fechasProgUnicas, setFechasProgUnicas] = useState<string[]>([]); // 'DD/MM/AAAA' o '__VACIO__'
   const [selectedOrdenes, setSelectedOrdenes] = useState<string[]>([]);
   const [tecnicos, setTecnicos] = useState<Tecnico[]>([]);
   const [selectedTecnicoId, setSelectedTecnicoId] = useState('');
@@ -183,7 +314,23 @@ export default function DespachoTableClient() {
     });
 
   // ── Helper: construir query filtrada (compartido entre fetchOrdenes y CSV export) ──
-  const buildFilteredQuery = useCallback((search: string, loc: string, desc: string, fecha: string, tecnico: string, estado: string, withCount: boolean) => {
+  const buildFilteredQuery = useCallback((
+    search: string,
+    loc: string,
+    desc: string,
+    fecha: string,
+    tecnico: string,
+    estado: string,
+    ordenSel: Set<string> | null,
+    contratoSel: Set<string> | null,
+    ubicacionSel: Set<string> | null,
+    trabajoSel: Set<string> | null,
+    estadoColSel: Set<string> | null,
+    slaSel: Set<string> | null,
+    fechaProgSel: Set<string> | null,
+    tecnicoColSel: Set<string> | null,
+    withCount: boolean
+  ) => {
     const query = supabase
       .from('ordenes')
       .select('*', withCount ? { count: 'exact' } : undefined)
@@ -225,6 +372,56 @@ export default function DespachoTableClient() {
         query.eq('id_tecnico_asignado', tecnico);
       }
     }
+
+    // ── Filtros tipo Excel de columna (selección múltiple) ──
+    if (ordenSel) query.in('orden_trabajo', Array.from(ordenSel));
+    if (contratoSel) query.in('contrato', Array.from(contratoSel));
+    if (ubicacionSel) query.in('localidad', Array.from(ubicacionSel));
+    if (trabajoSel) query.in('descripcion_del_trabajo', Array.from(trabajoSel));
+    if (estadoColSel) query.in('estado', Array.from(estadoColSel));
+    
+    if (tecnicoColSel) {
+      const ids = Array.from(tecnicoColSel);
+      const wantsSinAsignar = ids.includes('SIN_ASIGNAR');
+      const realIds = ids.filter(id => id !== 'SIN_ASIGNAR');
+      if (wantsSinAsignar && realIds.length > 0) {
+        query.or(`id_tecnico_asignado.is.null,id_tecnico_asignado.in.(${realIds.join(',')})`);
+      } else if (wantsSinAsignar) {
+        query.is('id_tecnico_asignado', null);
+      } else if (realIds.length > 0) {
+        query.in('id_tecnico_asignado', realIds);
+      }
+    }
+    
+    // Días/SLA es un valor CALCULADO (hoy - fecha_asignacion_ot), no una columna.
+    // Cada día seleccionado se convierte en un rango de fecha y se combinan con OR.
+    if (slaSel && slaSel.size > 0) {
+      const now = new Date();
+      const oneDayMs = 1000 * 60 * 60 * 24;
+      const orParts = Array.from(slaSel).map((diasStr) => {
+        const dias = Number(diasStr);
+        const to = new Date(now.getTime() - dias * oneDayMs);
+        const from = new Date(now.getTime() - (dias + 1) * oneDayMs);
+        return `and(fecha_asignacion_ot.gt.${from.toISOString()},fecha_asignacion_ot.lte.${to.toISOString()})`;
+      });
+      if (orParts.length > 0) query.or(orParts.join(','));
+    }
+    
+    // F. Programada: valores puntuales + opción "(Vacías)" para fecha_programada NULL
+    if (fechaProgSel && fechaProgSel.size > 0) {
+      const wantsVacio = fechaProgSel.has('__VACIO__');
+      const isoFechas = Array.from(fechaProgSel)
+        .filter((f) => f !== '__VACIO__')
+        .map((f) => {
+          const [d, m, y] = f.split('/');
+          return `${y}-${m}-${d}`;
+        });
+      const orParts: string[] = [];
+      if (isoFechas.length > 0) orParts.push(`fecha_programada.in.(${isoFechas.join(',')})`);
+      if (wantsVacio) orParts.push('fecha_programada.is.null');
+      if (orParts.length > 0) query.or(orParts.join(','));
+    }
+
     // Orden: SLA descendente = fecha_asignacion_ot ascendente (más vieja primero)
     query.order('fecha_asignacion_ot', { ascending: true });
 
@@ -236,7 +433,10 @@ export default function DespachoTableClient() {
     setLoadingOrdenes(true);
     setErrorOrdenes(null);
 
-    const query = buildFilteredQuery(debouncedSearch, localidadFilter, descripcionFilter, fechaFilter, tecnicoFilter, estadoFilter, true);
+    const query = buildFilteredQuery(
+      debouncedSearch, localidadFilter, descripcionFilter, fechaFilter, tecnicoFilter, estadoFilter,
+      ordenSelected, contratoSelected, ubicacionSelected, trabajoSelected, estadoColSelected, slaSelected, fechaProgSelected, tecnicoColSelected, true
+    );
     const from = (currentPage - 1) * PAGE_SIZE;
     const to = from + PAGE_SIZE - 1;
     query.range(from, to);
@@ -252,21 +452,51 @@ export default function DespachoTableClient() {
     }
     setLoadingOrdenes(false);
     setIsInitialLoad(false);
-  }, [buildFilteredQuery, debouncedSearch, localidadFilter, descripcionFilter, fechaFilter, tecnicoFilter, estadoFilter, currentPage]);
+  }, [buildFilteredQuery, debouncedSearch, localidadFilter, descripcionFilter, fechaFilter, tecnicoFilter, estadoFilter, ordenSelected, contratoSelected, ubicacionSelected, trabajoSelected, estadoColSelected, slaSelected, fechaProgSelected, tecnicoColSelected, currentPage]);
+
+  type FilaFiltroOpciones = {
+    orden_trabajo: string;
+    contrato: string;
+    localidad: string;
+    descripcion_del_trabajo?: string;
+    fecha_asignacion_ot?: string;
+    fecha_programada?: string;
+  };
 
   // ── Fetch opciones únicas para dropdowns (una vez al montar) ──
   const fetchFilterOptions = useCallback(async () => {
     const { data } = await supabase
       .from('ordenes')
-      .select('localidad, descripcion_del_trabajo')
-      .not('estado', 'in', '("Efectiva","Cancelada")');
+      .select('orden_trabajo, contrato, localidad, descripcion_del_trabajo, fecha_asignacion_ot, fecha_programada')
+      .not('estado', 'in', '("Efectiva","Cancelada")')
+      .returns<FilaFiltroOpciones[]>();
 
-    if (data) {
-      const locs = [...new Set(data.map((d: { localidad: string }) => d.localidad).filter(Boolean))].sort() as string[];
-      const descs = [...new Set(data.map((d: { descripcion_del_trabajo?: string }) => d.descripcion_del_trabajo).filter(Boolean))].sort() as string[];
-      setLocalidadesUnicas(locs);
-      setDescripcionesUnicas(descs);
-    }
+    if (!data) return;
+
+    const locs = [...new Set(data.map((d) => d.localidad).filter(Boolean))].sort();
+    const descs = [...new Set(data.map((d) => d.descripcion_del_trabajo).filter(Boolean))].sort() as string[];
+    const ordenes = [...new Set(data.map((d) => d.orden_trabajo).filter(Boolean))].sort();
+    const contratos = [...new Set(data.map((d) => d.contrato).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+
+    const dias = [...new Set(data.map((d) => String(calcularDiasSLA(d.fecha_asignacion_ot))))]
+      .sort((a, b) => Number(a) - Number(b));
+
+    const fechas = [...new Set(
+      data.map((d) => (d.fecha_programada ? formatearFechaPura(d.fecha_programada) : '__VACIO__'))
+    )].sort((a, b) => {
+      if (a === '__VACIO__') return 1;
+      if (b === '__VACIO__') return -1;
+      const [da, ma, ya] = a.split('/').map(Number);
+      const [db, mb, yb] = b.split('/').map(Number);
+      return new Date(ya, ma - 1, da).getTime() - new Date(yb, mb - 1, db).getTime();
+    });
+
+    setLocalidadesUnicas(locs);
+    setDescripcionesUnicas(descs);
+    setOrdenesUnicas(ordenes);
+    setContratosUnicos(contratos);
+    setSlaDiasUnicos(dias);
+    setFechasProgUnicas(fechas);
   }, []);
 
   // Lee la fecha de la última carga de Excel desde la tabla app_metadata.
@@ -311,7 +541,7 @@ export default function DespachoTableClient() {
   useEffect(() => {
     setCurrentPage(1);
     setSelectedOrdenes([]);
-  }, [debouncedSearch, localidadFilter, descripcionFilter, fechaFilter, tecnicoFilter, estadoFilter]);
+  }, [debouncedSearch, localidadFilter, descripcionFilter, fechaFilter, tecnicoFilter, estadoFilter, ordenSelected, contratoSelected, ubicacionSelected, trabajoSelected, estadoColSelected, slaSelected, fechaProgSelected, tecnicoColSelected]);
 
   // ── Limpiar selección al cambiar de página ──
   useEffect(() => {
@@ -340,6 +570,19 @@ export default function DespachoTableClient() {
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
+
+  useEffect(() => {
+    if (!openColumnFilter) return;
+    const handleClickOutsideFilter = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (target.closest('[data-colfilter-caret]')) return;
+      if (columnFilterRef.current && !columnFilterRef.current.contains(target)) {
+        setOpenColumnFilter(null);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutsideFilter);
+    return () => document.removeEventListener('mousedown', handleClickOutsideFilter);
+  }, [openColumnFilter]);
 
   // Fetch real technicians from perfiles table
   useEffect(() => {
@@ -382,7 +625,7 @@ export default function DespachoTableClient() {
     const emails = [...new Set(historialData.map((h: HistorialEntry) => h.usuario).filter(Boolean))];
 
     // JOIN manual: buscar nombre y rol de cada autor en perfiles
-    let perfilesMap: Record<string, { nombre: string; rol: string }> = {};
+    const perfilesMap: Record<string, { nombre: string; rol: string }> = {};
     if (emails.length > 0) {
       const { data: perfilesData } = await supabase
         .from('perfiles')
@@ -486,13 +729,6 @@ export default function DespachoTableClient() {
     return found ? found.nombre : null;
   };
 
-  // Helper: estado de asignación (usado en CSV, lógica futura — ya NO se usa para pintar la columna Estado)
-  const getEstadoAsignacion = (row: Orden): { label: string; bg: string; text: string } => {
-    const nombre = getTecnicoNombre(row.id_tecnico_asignado as string);
-    if (!nombre) return { label: 'Sin asignar', bg: 'bg-gray-100', text: 'text-gray-600' };
-    if (nombre === 'Programado') return { label: 'Programado', bg: 'bg-yellow-100', text: 'text-yellow-800' };
-    return { label: 'Asignada', bg: 'bg-blue-100', text: 'text-blue-800' };
-  };
 
   // Helper: badge del ESTADO REAL de la orden (independiente de la asignación)
   const getEstadoBadge = (estado: string): { label: string; bg: string; text: string } => {
@@ -503,6 +739,8 @@ export default function DespachoTableClient() {
     // ya que Efectiva/Cancelada se filtran en buildFilteredQuery.
     return { label: 'Pendiente', bg: '#DBEAFE', text: '#1E40AF' };
   };
+
+ 
 
   const handleSelectAll = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.checked) {
@@ -734,7 +972,10 @@ export default function DespachoTableClient() {
   // ── Exportar a CSV (todos los filtrados, sin paginación) ──────────────
   const handleExportCSV = async () => {
     // Query con los mismos filtros activos pero SIN .range()
-    const query = buildFilteredQuery(debouncedSearch, localidadFilter, descripcionFilter, fechaFilter, tecnicoFilter, estadoFilter, false);
+    const query = buildFilteredQuery(
+      debouncedSearch, localidadFilter, descripcionFilter, fechaFilter, tecnicoFilter, estadoFilter,
+      ordenSelected, contratoSelected, ubicacionSelected, trabajoSelected, estadoColSelected, slaSelected, fechaProgSelected, tecnicoColSelected, false
+    );
     const { data: allFiltered, error } = await query;
 
     if (error || !allFiltered || allFiltered.length === 0) return;
@@ -911,7 +1152,17 @@ export default function DespachoTableClient() {
           </select>
           <button
             type="button"
-            onClick={() => { setSearchTerm(''); setLocalidadFilter('Todas'); setDescripcionFilter('Todas las Descripciones'); setFechaFilter('Todas'); setTecnicoFilter('Todos'); setEstadoFilter('Todos'); }}
+            onClick={() => { 
+              setSearchTerm(''); setLocalidadFilter('Todas'); setDescripcionFilter('Todas las Descripciones'); setFechaFilter('Todas'); setTecnicoFilter('Todos'); setEstadoFilter('Todos');
+              setOrdenSelected(null);
+              setContratoSelected(null);
+              setUbicacionSelected(null);
+              setTrabajoSelected(null);
+              setEstadoColSelected(null);
+              setSlaSelected(null);
+              setFechaProgSelected(null);
+              setTecnicoColSelected(null);
+            }}
             className="ml-auto flex items-center gap-1.5 text-sm text-blue-600 hover:text-blue-700 whitespace-nowrap"
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
@@ -934,20 +1185,204 @@ export default function DespachoTableClient() {
                     onChange={handleSelectAll}
                   />
                 </th>
-                <th className="py-2.5 px-2.5" style={{ width: '150px' }}>Orden / Contrato</th>
-                <th className="py-2.5 px-2.5" style={{ width: '420px' }}>Ubicación</th>
-                <th className="py-2.5 px-2.5" style={{ width: '220px' }}>Trabajo</th>
-                <th className="py-2.5 px-2.5" style={{ width: '110px' }}>Estado</th>
-                <th className="py-2.5 px-2.5" style={{ width: '90px' }}>Días / SLA</th>
-                <th className="py-2.5 px-2.5" style={{ width: '120px' }}>F. Programada</th>
-                <th className="py-2.5 px-2.5" style={{ width: '170px' }}>Técnico</th>
+                {/* Orden */}
+                <th className="py-2.5 px-2.5 relative" style={{ width: '120px' }}>
+                  <div className="flex items-center gap-1">
+                    <span>Orden</span>
+                    <button
+                      type="button"
+                      data-colfilter-caret="true"
+                      onClick={(e) => { e.stopPropagation(); setOpenColumnFilter(p => p === 'orden' ? null : 'orden'); }}
+                      className={`p-0.5 rounded hover:bg-gray-200 ${ordenSelected !== null ? 'text-blue-600' : 'text-gray-400'}`}
+                    >
+                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" /></svg>
+                    </button>
+                  </div>
+                  {openColumnFilter === 'orden' && (
+                    <ExcelColumnFilter
+                      panelRef={columnFilterRef}
+                      options={ordenesUnicas.map(o => ({ value: o, label: o }))}
+                      selected={ordenSelected}
+                      onApply={(next) => { setOrdenSelected(next); setOpenColumnFilter(null); }}
+                      onCancel={() => setOpenColumnFilter(null)}
+                    />
+                  )}
+                </th>
+
+                {/* Contrato */}
+                <th className="py-2.5 px-2.5 relative" style={{ width: '100px' }}>
+                  <div className="flex items-center gap-1">
+                    <span>Contrato</span>
+                    <button
+                      type="button"
+                      data-colfilter-caret="true"
+                      onClick={(e) => { e.stopPropagation(); setOpenColumnFilter(p => p === 'contrato' ? null : 'contrato'); }}
+                      className={`p-0.5 rounded hover:bg-gray-200 ${contratoSelected !== null ? 'text-blue-600' : 'text-gray-400'}`}
+                    >
+                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" /></svg>
+                    </button>
+                  </div>
+                  {openColumnFilter === 'contrato' && (
+                    <ExcelColumnFilter
+                      panelRef={columnFilterRef}
+                      options={contratosUnicos.map(c => ({ value: c, label: c }))}
+                      selected={contratoSelected}
+                      onApply={(next) => { setContratoSelected(next); setOpenColumnFilter(null); }}
+                      onCancel={() => setOpenColumnFilter(null)}
+                    />
+                  )}
+                </th>
+
+                {/* Ubicación */}
+                <th className="py-2.5 px-2.5 relative" style={{ width: '400px' }}>
+                  <div className="flex items-center gap-1">
+                    <span>Ubicación</span>
+                    <button
+                      type="button"
+                      data-colfilter-caret="true"
+                      onClick={(e) => { e.stopPropagation(); setOpenColumnFilter(p => p === 'ubicacion' ? null : 'ubicacion'); }}
+                      className={`p-0.5 rounded hover:bg-gray-200 ${ubicacionSelected !== null ? 'text-blue-600' : 'text-gray-400'}`}
+                    >
+                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" /></svg>
+                    </button>
+                  </div>
+                  {openColumnFilter === 'ubicacion' && (
+                    <ExcelColumnFilter
+                      panelRef={columnFilterRef}
+                      options={localidadesUnicas.map(l => ({ value: l, label: l }))}
+                      selected={ubicacionSelected}
+                      onApply={(next) => { setUbicacionSelected(next); setOpenColumnFilter(null); }}
+                      onCancel={() => setOpenColumnFilter(null)}
+                    />
+                  )}
+                </th>
+
+                {/* Trabajo */}
+                <th className="py-2.5 px-2.5 relative" style={{ width: '200px' }}>
+                  <div className="flex items-center gap-1">
+                    <span>Trabajo</span>
+                    <button
+                      type="button"
+                      data-colfilter-caret="true"
+                      onClick={(e) => { e.stopPropagation(); setOpenColumnFilter(p => p === 'trabajo' ? null : 'trabajo'); }}
+                      className={`p-0.5 rounded hover:bg-gray-200 ${trabajoSelected !== null ? 'text-blue-600' : 'text-gray-400'}`}
+                    >
+                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" /></svg>
+                    </button>
+                  </div>
+                  {openColumnFilter === 'trabajo' && (
+                    <ExcelColumnFilter
+                      panelRef={columnFilterRef}
+                      options={descripcionesUnicas.map(d => ({ value: d, label: d }))}
+                      selected={trabajoSelected}
+                      onApply={(next) => { setTrabajoSelected(next); setOpenColumnFilter(null); }}
+                      onCancel={() => setOpenColumnFilter(null)}
+                    />
+                  )}
+                </th>
+
+                {/* Estado */}
+                <th className="py-2.5 px-2.5 relative" style={{ width: '110px' }}>
+                  <div className="flex items-center gap-1">
+                    <span>Estado</span>
+                    <button
+                      type="button"
+                      data-colfilter-caret="true"
+                      onClick={(e) => { e.stopPropagation(); setOpenColumnFilter(p => p === 'estado' ? null : 'estado'); }}
+                      className={`p-0.5 rounded hover:bg-gray-200 ${estadoColSelected !== null ? 'text-blue-600' : 'text-gray-400'}`}
+                    >
+                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" /></svg>
+                    </button>
+                  </div>
+                  {openColumnFilter === 'estado' && (
+                    <ExcelColumnFilter
+                      panelRef={columnFilterRef}
+                      options={[{ value: 'Pendiente', label: 'Pendiente' }, { value: 'Programada', label: 'Programada' }]}
+                      selected={estadoColSelected}
+                      onApply={(next) => { setEstadoColSelected(next); setOpenColumnFilter(null); }}
+                      onCancel={() => setOpenColumnFilter(null)}
+                    />
+                  )}
+                </th>
+
+                {/* Días / SLA */}
+                <th className="py-2.5 px-2.5 relative" style={{ width: '90px' }}>
+                  <div className="flex items-center gap-1">
+                    <span>Días / SLA</span>
+                    <button
+                      type="button"
+                      data-colfilter-caret="true"
+                      onClick={(e) => { e.stopPropagation(); setOpenColumnFilter(p => p === 'sla' ? null : 'sla'); }}
+                      className={`p-0.5 rounded hover:bg-gray-200 ${slaSelected !== null ? 'text-blue-600' : 'text-gray-400'}`}
+                    >
+                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" /></svg>
+                    </button>
+                  </div>
+                  {openColumnFilter === 'sla' && (
+                    <ExcelColumnFilter
+                      panelRef={columnFilterRef}
+                      options={slaDiasUnicos.map(d => ({ value: d, label: `${d} ${d === '1' ? 'día' : 'días'}` }))}
+                      selected={slaSelected}
+                      onApply={(next) => { setSlaSelected(next); setOpenColumnFilter(null); }}
+                      onCancel={() => setOpenColumnFilter(null)}
+                    />
+                  )}
+                </th>
+
+                {/* F. Programada */}
+                <th className="py-2.5 px-2.5 relative" style={{ width: '120px' }}>
+                  <div className="flex items-center gap-1">
+                    <span>F. Programada</span>
+                    <button
+                      type="button"
+                      data-colfilter-caret="true"
+                      onClick={(e) => { e.stopPropagation(); setOpenColumnFilter(p => p === 'fechaProg' ? null : 'fechaProg'); }}
+                      className={`p-0.5 rounded hover:bg-gray-200 ${fechaProgSelected !== null ? 'text-blue-600' : 'text-gray-400'}`}
+                    >
+                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" /></svg>
+                    </button>
+                  </div>
+                  {openColumnFilter === 'fechaProg' && (
+                    <ExcelColumnFilter
+                      panelRef={columnFilterRef}
+                      options={fechasProgUnicas.map(f => ({ value: f, label: f === '__VACIO__' ? '(Vacías)' : f }))}
+                      selected={fechaProgSelected}
+                      onApply={(next) => { setFechaProgSelected(next); setOpenColumnFilter(null); }}
+                      onCancel={() => setOpenColumnFilter(null)}
+                    />
+                  )}
+                </th>
+
+                {/* Técnico */}
+                <th className="py-2.5 px-2.5 relative" style={{ width: '170px' }}>
+                  <div className="flex items-center gap-1">
+                    <span>Técnico</span>
+                    <button
+                      type="button"
+                      data-colfilter-caret="true"
+                      onClick={(e) => { e.stopPropagation(); setOpenColumnFilter(p => p === 'tecnico' ? null : 'tecnico'); }}
+                      className={`p-0.5 rounded hover:bg-gray-200 ${tecnicoColSelected !== null ? 'text-blue-600' : 'text-gray-400'}`}
+                    >
+                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" /></svg>
+                    </button>
+                  </div>
+                  {openColumnFilter === 'tecnico' && (
+                    <ExcelColumnFilter
+                      panelRef={columnFilterRef}
+                      options={[{ value: 'SIN_ASIGNAR', label: 'Sin asignar' }, ...tecnicos.map(t => ({ value: t.id_usuario, label: t.nombre }))]}
+                      selected={tecnicoColSelected}
+                      onApply={(next) => { setTecnicoColSelected(next); setOpenColumnFilter(null); }}
+                      onCancel={() => setOpenColumnFilter(null)}
+                    />
+                  )}
+                </th>
                 <th className="py-2.5 px-2.5 text-center" style={{ width: '50px' }}>Acciones</th>
               </tr>
             </thead>
             <tbody className="text-xs text-gray-700">
               {ordenes.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="p-8 text-center text-gray-500">
+                  <td colSpan={10} className="p-8 text-center text-gray-500">
                     No se encontraron órdenes que coincidan con los filtros.
                   </td>
                 </tr>
@@ -967,9 +1402,13 @@ export default function DespachoTableClient() {
                       />
                     </td>
                     <td className="py-2.5 px-2.5" style={{ height: '72px' }}>
-                      <div className="flex flex-col justify-center h-full gap-0.5">
+                      <div className="flex flex-col justify-center h-full">
                         <p style={{ fontSize: '15px', fontWeight: 700, color: '#111827' }}>{row.orden_trabajo}</p>
-                        <p style={{ fontSize: '12px', color: '#94A3B8' }}>Contrato: {row.contrato}</p>
+                      </div>
+                    </td>
+                    <td className="py-2.5 px-2.5" style={{ height: '72px' }}>
+                      <div className="flex flex-col justify-center h-full">
+                        <p style={{ fontSize: '13px', fontWeight: 500, color: '#374151' }}>{row.contrato}</p>
                       </div>
                     </td>
                     <td className="py-2.5 px-2.5" style={{ height: '72px', wordBreak: 'break-word' }}>

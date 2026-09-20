@@ -1128,6 +1128,49 @@ export default function AuditoriaClient() {
                               <p className="text-xs text-gray-400 italic mb-3">No se registró comentario para esta actualización.</p>
                             )}
 
+                            {/* Equipo de trabajo (solo si existe) */}
+                            {h.equipo_trabajo && h.equipo_trabajo.length > 0 && (
+                              <div style={{
+                                marginBottom: '12px',
+                                padding: '10px 14px',
+                                background: '#EEF2FF',
+                                borderRadius: '10px',
+                              }}>
+                                <p style={{
+                                  margin: '0 0 8px',
+                                  fontSize: '12px',
+                                  fontWeight: 700,
+                                  color: '#1A3A6B',
+                                  textTransform: 'uppercase',
+                                  letterSpacing: '0.05em',
+                                }}>
+                                  Equipo de trabajo
+                                </p>
+                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                                  {h.equipo_trabajo.map((miembro: string, idx: number) => (
+                                    <span key={idx} style={{
+                                      display: 'inline-flex',
+                                      alignItems: 'center',
+                                      gap: '4px',
+                                      padding: '3px 10px',
+                                      background: 'white',
+                                      borderRadius: '9999px',
+                                      fontSize: '12px',
+                                      fontWeight: 600,
+                                      color: '#1A3A6B',
+                                      border: '1px solid #C7D7F5',
+                                    }}>
+                                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#1A3A6B" strokeWidth="2.5">
+                                        <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+                                        <circle cx="12" cy="7" r="4"/>
+                                      </svg>
+                                      {miembro}
+                                    </span>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+
                             {/* Fotos de ESTA actualización únicamente */}
                             {fotos.length > 0 ? (
                               <div>
