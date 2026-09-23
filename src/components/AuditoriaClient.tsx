@@ -17,6 +17,20 @@ interface ItemReporte {
   subtotal: number;
 }
 
+type ItemEditable = {
+  id: string | null; // null = ítem nuevo, aún no guardado en items_reporte
+  codigo: string;
+  descripcion: string;
+  precio_unitario: number;
+  cantidad: number;
+};
+
+type ItemCatalogo = {
+  codigo: string;
+  descripcion: string;
+  precio_unitario: number;
+};
+
 type Orden = {
   orden_trabajo: string;
   contrato: string;
@@ -54,6 +68,15 @@ export default function AuditoriaClient() {
   const [reporteOrden, setReporteOrden] = useState<Orden | null>(null);
   const [itemsReporte, setItemsReporte] = useState<ItemReporte[]>([]);
   const [cargandoItems, setCargandoItems] = useState(false);
+  const [modoEdicionItems, setModoEdicionItems] = useState(false);
+  const [itemsEditables, setItemsEditables] = useState<ItemEditable[]>([]);
+  const [cuotasEditable, setCuotasEditable] = useState<number | ''>('');
+  const [isGuardandoEdicion, setIsGuardandoEdicion] = useState(false);
+
+  const [catalogoItems, setCatalogoItems] = useState<ItemCatalogo[]>([]);
+  const [busquedaCatalogo, setBusquedaCatalogo] = useState('');
+  const [itemCatalogoSeleccionado, setItemCatalogoSeleccionado] = useState<ItemCatalogo | null>(null);
+  const [cantidadNuevoItem, setCantidadNuevoItem] = useState(1);
   const [lightbox, setLightbox] = useState<{ fotos: string[]; index: number } | null>(null);
   const [zoomLevel, setZoomLevel] = useState(1);
   const [historialAuditoria, setHistorialAuditoria] = useState<any[]>([]);
@@ -90,6 +113,9 @@ export default function AuditoriaClient() {
             setHistorialAuditoria([]);
             setItemsReporte([]);
             setCargandoItems(false);
+            setModoEdicionItems(false);
+            setItemsEditables([]);
+            setCuotasEditable('');
           }
         } else if (lightbox && e.key === 'ArrowLeft' && lightbox.fotos.length > 1) {
           setLightbox({ ...lightbox, index: (lightbox.index - 1 + lightbox.fotos.length) % lightbox.fotos.length });
@@ -111,17 +137,34 @@ export default function AuditoriaClient() {
 
   const abrirReporte = async (row: Orden) => {
     setReporteOrden(row);
+    setModoEdicionItems(false);
+    setCuotasEditable(row.numero_cuotas ?? '');
+    setBusquedaCatalogo('');
+    setItemCatalogoSeleccionado(null);
+    setCantidadNuevoItem(1);
     // Cargar ítems del reporte si la orden es Efectiva
     if (row.estado === 'Efectiva') {
       setCargandoItems(true);
       setItemsReporte([]);
+      setItemsEditables([]);
       try {
         const { data, error } = await supabase
           .from('items_reporte')
           .select('id, codigo, descripcion, precio_unitario, cantidad, subtotal')
           .eq('orden_trabajo', row.orden_trabajo)
           .order('creado_en', { ascending: true });
-        if (!error && data) setItemsReporte(data as ItemReporte[]);
+        if (!error && data) {
+          setItemsReporte(data as ItemReporte[]);
+          setItemsEditables(
+            (data as ItemReporte[]).map((it) => ({
+              id: it.id,
+              codigo: it.codigo,
+              descripcion: it.descripcion,
+              precio_unitario: it.precio_unitario,
+              cantidad: it.cantidad,
+            }))
+          );
+        }
       } catch (e) {
         console.error('Error al cargar ítems del reporte:', e);
       } finally {
@@ -129,6 +172,7 @@ export default function AuditoriaClient() {
       }
     } else {
       setItemsReporte([]);
+      setItemsEditables([]);
     }
   };
 
@@ -194,6 +238,18 @@ export default function AuditoriaClient() {
       }
     };
     fetchTecnicos();
+  }, []);
+
+  useEffect(() => {
+    const fetchCatalogoItems = async () => {
+      const { data, error } = await supabase
+        .from('codigos_trabajo')
+        .select('codigo, descripcion, precio_unitario')
+        .eq('activo', true)
+        .order('descripcion', { ascending: true });
+      if (!error && data) setCatalogoItems(data as ItemCatalogo[]);
+    };
+    fetchCatalogoItems();
   }, []);
 
   const getTecnicoNombre = (id?: string) => {
@@ -344,6 +400,124 @@ export default function AuditoriaClient() {
       alert('Hubo un error inesperado al reabrir la orden.');
     } finally {
       setIsReopening(null);
+    }
+  };
+
+  const catalogoFiltrado = useMemo(() => {
+    const texto = busquedaCatalogo.trim().toLowerCase();
+    if (!texto) return catalogoItems.slice(0, 30);
+    return catalogoItems
+      .filter((it) => it.descripcion.toLowerCase().includes(texto) || it.codigo.toLowerCase().includes(texto))
+      .slice(0, 30);
+  }, [catalogoItems, busquedaCatalogo]);
+
+  const handleAgregarItemEditable = () => {
+    if (!itemCatalogoSeleccionado || cantidadNuevoItem <= 0) return;
+    setItemsEditables((prev) => [
+      ...prev,
+      {
+        id: null,
+        codigo: itemCatalogoSeleccionado.codigo,
+        descripcion: itemCatalogoSeleccionado.descripcion,
+        precio_unitario: itemCatalogoSeleccionado.precio_unitario,
+        cantidad: cantidadNuevoItem,
+      },
+    ]);
+    setItemCatalogoSeleccionado(null);
+    setBusquedaCatalogo('');
+    setCantidadNuevoItem(1);
+  };
+
+  const handleEliminarItemEditable = (index: number) => {
+    setItemsEditables((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const handleCambiarCantidadEditable = (index: number, cantidad: number) => {
+    setItemsEditables((prev) =>
+      prev.map((it, i) => (i === index ? { ...it, cantidad: Math.max(1, cantidad) } : it))
+    );
+  };
+
+  const totalEjecutadoEditable = useMemo(
+    () => itemsEditables.reduce((sum, it) => sum + it.precio_unitario * it.cantidad, 0),
+    [itemsEditables]
+  );
+
+  const handleGuardarEdicionItems = async () => {
+    if (!reporteOrden) return;
+    setIsGuardandoEdicion(true);
+    try {
+      const idsOriginales = itemsReporte.map((it) => it.id);
+      const idsActuales = itemsEditables.filter((it) => it.id).map((it) => it.id as string);
+      const idsAEliminar = idsOriginales.filter((id) => !idsActuales.includes(id));
+
+      if (idsAEliminar.length > 0) {
+        const { error } = await supabase.from('items_reporte').delete().in('id', idsAEliminar);
+        if (error) throw error;
+      }
+
+      for (const item of itemsEditables) {
+        const subtotal = item.precio_unitario * item.cantidad;
+        if (item.id) {
+          const original = itemsReporte.find((it) => it.id === item.id);
+          if (original && original.cantidad !== item.cantidad) {
+            const { error } = await supabase
+              .from('items_reporte')
+              .update({ cantidad: item.cantidad, subtotal })
+              .eq('id', item.id);
+            if (error) throw error;
+          }
+        } else {
+          const { error } = await supabase.from('items_reporte').insert({
+            orden_trabajo: reporteOrden.orden_trabajo,
+            codigo: item.codigo,
+            descripcion: item.descripcion,
+            precio_unitario: item.precio_unitario,
+            cantidad: item.cantidad,
+            subtotal,
+          });
+          if (error) throw error;
+        }
+      }
+
+      const nuevoNumeroCuotas = cuotasEditable === '' ? null : Number(cuotasEditable);
+      if (nuevoNumeroCuotas !== (reporteOrden.numero_cuotas ?? null)) {
+        const { error } = await supabase
+          .from('ordenes')
+          .update({ numero_cuotas: nuevoNumeroCuotas })
+          .eq('orden_trabajo', reporteOrden.orden_trabajo);
+        if (error) throw error;
+      }
+
+      const { data: nuevosItems } = await supabase
+        .from('items_reporte')
+        .select('id, codigo, descripcion, precio_unitario, cantidad, subtotal')
+        .eq('orden_trabajo', reporteOrden.orden_trabajo)
+        .order('creado_en', { ascending: true });
+
+      const itemsActualizados = (nuevosItems as ItemReporte[]) || [];
+      setItemsReporte(itemsActualizados);
+      setItemsEditables(
+        itemsActualizados.map((it) => ({
+          id: it.id,
+          codigo: it.codigo,
+          descripcion: it.descripcion,
+          precio_unitario: it.precio_unitario,
+          cantidad: it.cantidad,
+        }))
+      );
+      setReporteOrden((prev) => (prev ? { ...prev, numero_cuotas: nuevoNumeroCuotas } : prev));
+      setOrdenes((prev) =>
+        prev.map((o) =>
+          o.orden_trabajo === reporteOrden.orden_trabajo ? { ...o, numero_cuotas: nuevoNumeroCuotas } : o
+        )
+      );
+      setModoEdicionItems(false);
+    } catch (err) {
+      console.error('Error al guardar edición de ítems:', err);
+      alert('Hubo un error al guardar los cambios. Intenta de nuevo.');
+    } finally {
+      setIsGuardandoEdicion(false);
     }
   };
 
@@ -859,7 +1033,7 @@ export default function AuditoriaClient() {
               <div className="flex items-center justify-between p-5 pb-3">
                 <h3 className="text-xl font-bold text-slate-800">Reporte de la Orden #{reporteOrden.orden_trabajo}</h3>
                 <button
-                  onClick={() => { setReporteOrden(null); setHistorialAuditoria([]); setItemsReporte([]); setCargandoItems(false); }}
+                  onClick={() => { setReporteOrden(null); setHistorialAuditoria([]); setItemsReporte([]); setCargandoItems(false); setModoEdicionItems(false); setItemsEditables([]); setCuotasEditable(''); }}
                   className="text-gray-400 hover:bg-gray-100 hover:text-red-500 rounded-full p-1.5 transition-colors"
                 >
                   <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
@@ -906,16 +1080,15 @@ export default function AuditoriaClient() {
             {/* Cuerpo con scroll interno */}
             <div className="flex-1 overflow-y-auto p-5 bg-gray-50">
 
-            {/* ── Ítems ejecutados (solo para órdenes Efectiva con ítems) ── */}
-            {reporteOrden.estado === 'Efectiva' && (cargandoItems || itemsReporte.length > 0) && (
+            {/* ── Ítems ejecutados (solo para órdenes Efectiva) ── */}
+            {reporteOrden.estado === 'Efectiva' && (
               <div style={{
                 background: '#F8FAFF',
                 borderRadius: 12,
                 padding: '20px',
                 marginBottom: 20,
               }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
-                  {/* Título izquierda */}
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16, flexWrap: 'wrap', gap: 10 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                     <div style={{
                       width: 36, height: 36,
@@ -928,62 +1101,54 @@ export default function AuditoriaClient() {
                       </svg>
                     </div>
                     <div>
-                      <p style={{ margin: 0, fontWeight: 700, fontSize: 15, color: '#1A1A2E' }}>
-                        Ítems ejecutados
-                      </p>
-                      <p style={{ margin: 0, fontSize: 12, color: '#9CA3AF' }}>
-                        Servicios realizados por el técnico en la orden.
-                      </p>
+                      <p style={{ margin: 0, fontWeight: 700, fontSize: 15, color: '#1A1A2E' }}>Ítems ejecutados</p>
+                      <p style={{ margin: 0, fontSize: 12, color: '#9CA3AF' }}>Servicios realizados por el técnico en la orden.</p>
                     </div>
                   </div>
 
-                  {/* Stats derecha: total ítems + cuotas */}
-                  <div style={{ display: 'flex', gap: 10 }}>
-                    {/* Total de ítems */}
-                    {!cargandoItems && itemsReporte.length > 0 && (
-                      <div style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 8,
-                        background: 'white',
-                        border: '1px solid #E8EDF5',
-                        borderRadius: 10,
-                        padding: '8px 14px',
-                      }}>
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#1A3A6B" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                          <line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>
-                        </svg>
-                        <div>
-                          <p style={{ margin: 0, fontSize: 10, color: '#9CA3AF', fontWeight: 600 }}>Total de ítems ejecutados</p>
-                          <p style={{ margin: 0, fontSize: 18, fontWeight: 800, color: '#1A3A6B', lineHeight: 1.2 }}>
-                            {itemsReporte.length}
-                          </p>
-                        </div>
-                      </div>
-                    )}
+                  {!modoEdicionItems ? (
+                    <button
+                      type="button"
+                      onClick={() => setModoEdicionItems(true)}
+                      style={{
+                        display: 'flex', alignItems: 'center', gap: 6,
+                        padding: '8px 14px', borderRadius: 8, border: '1px solid #1A3A6B',
+                        background: 'white', color: '#1A3A6B', fontSize: 12, fontWeight: 700, cursor: 'pointer',
+                      }}
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path strokeLinecap="round" strokeLinejoin="round" d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                      Editar
+                    </button>
+                  ) : (
+                    <span style={{ fontSize: 11, fontWeight: 700, color: '#B45309', background: '#FFFBEB', border: '1px solid #FDE68A', padding: '4px 10px', borderRadius: 999 }}>
+                      Editando — recuerda dar &quot;Guardar cambios&quot;
+                    </span>
+                  )}
+                </div>
 
-                    {/* Cuotas del servicio */}
-                    {reporteOrden.numero_cuotas != null && (
-                      <div style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 8,
-                        background: 'white',
-                        border: '1px solid #E8EDF5',
-                        borderRadius: 10,
-                        padding: '8px 14px',
-                      }}>
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#1A3A6B" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                          <rect x="1" y="4" width="22" height="16" rx="2" ry="2"/><line x1="1" y1="10" x2="23" y2="10"/>
-                        </svg>
-                        <div>
-                          <p style={{ margin: 0, fontSize: 10, color: '#9CA3AF', fontWeight: 600 }}>Cuotas del servicio</p>
-                          <p style={{ margin: 0, fontSize: 18, fontWeight: 800, color: '#1A3A6B', lineHeight: 1.2 }}>
-                            {reporteOrden.numero_cuotas}
-                          </p>
-                          <p style={{ margin: 0, fontSize: 10, color: '#9CA3AF' }}>(Solo visualización)</p>
-                        </div>
-                      </div>
+                {/* Cuotas del servicio */}
+                <div style={{
+                  display: 'flex', alignItems: 'center', gap: 10,
+                  background: 'white', border: '1px solid #E8EDF5', borderRadius: 10,
+                  padding: '10px 14px', marginBottom: 14, maxWidth: 260,
+                }}>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#1A3A6B" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="1" y="4" width="22" height="16" rx="2" ry="2"/><line x1="1" y1="10" x2="23" y2="10"/>
+                  </svg>
+                  <div style={{ flex: 1 }}>
+                    <p style={{ margin: 0, fontSize: 10, color: '#9CA3AF', fontWeight: 600 }}>Cuotas del servicio</p>
+                    {modoEdicionItems ? (
+                      <input
+                        type="number"
+                        min={0}
+                        value={cuotasEditable}
+                        onChange={(e) => setCuotasEditable(e.target.value === '' ? '' : Number(e.target.value))}
+                        style={{ width: '100%', fontSize: 16, fontWeight: 800, color: '#1A3A6B', border: '1px solid #D1D5DB', borderRadius: 6, padding: '2px 6px', marginTop: 2 }}
+                      />
+                    ) : (
+                      <p style={{ margin: '2px 0 0', fontSize: 18, fontWeight: 800, color: '#1A3A6B' }}>
+                        {reporteOrden.numero_cuotas ?? '—'}
+                      </p>
                     )}
                   </div>
                 </div>
@@ -992,58 +1157,158 @@ export default function AuditoriaClient() {
                   <div style={{ textAlign: 'center', padding: '20px', color: '#9CA3AF', fontSize: 14 }}>
                     Cargando ítems...
                   </div>
-                ) : itemsReporte.length === 0 ? (
-                  <div style={{ textAlign: 'center', padding: '16px', color: '#9CA3AF', fontSize: 13 }}>
-                    Sin ítems registrados.
-                  </div>
                 ) : (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                    {itemsReporte.map((item) => (
-                      <div key={item.id} style={{
-                        background: 'white',
-                        borderRadius: 10,
-                        padding: '14px 16px',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 14,
-                        border: '1px solid #E8EDF5',
-                      }}>
-                        <div style={{
-                          width: 36, height: 36,
-                          background: '#EEF2FF',
-                          borderRadius: 8,
-                          display: 'flex', alignItems: 'center', justifyContent: 'center',
-                          flexShrink: 0,
-                        }}>
-                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#1A3A6B" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
-                          </svg>
+                  <>
+                    {(modoEdicionItems ? itemsEditables : itemsReporte).length === 0 ? (
+                      <div style={{ textAlign: 'center', padding: '16px', color: '#9CA3AF', fontSize: 13 }}>
+                        Sin ítems registrados.
+                      </div>
+                    ) : (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                        {(modoEdicionItems ? itemsEditables : itemsReporte).map((item, idx) => (
+                          <div key={item.id ?? `nuevo-${idx}`} style={{
+                            background: 'white',
+                            borderRadius: 10,
+                            padding: '14px 16px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 14,
+                            border: '1px solid #E8EDF5',
+                          }}>
+                            <div style={{
+                              width: 36, height: 36,
+                              background: '#EEF2FF',
+                              borderRadius: 8,
+                              display: 'flex', alignItems: 'center', justifyContent: 'center',
+                              flexShrink: 0,
+                            }}>
+                              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#1A3A6B" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
+                              </svg>
+                            </div>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <p style={{ margin: 0, fontWeight: 700, fontSize: 14, color: '#1A1A2E' }}>{item.descripcion}</p>
+                              <p style={{ margin: '3px 0 0', fontSize: 12, color: '#1A3A6B', fontWeight: 500 }}>
+                                Cód. {item.codigo} • ${item.precio_unitario.toLocaleString('es-CO')}
+                              </p>
+                            </div>
+                            <div style={{
+                              background: '#F0F4FF',
+                              borderRadius: 8,
+                              padding: '8px 16px',
+                              textAlign: 'center',
+                              flexShrink: 0,
+                            }}>
+                              <p style={{ margin: 0, fontSize: 11, color: '#9CA3AF', fontWeight: 600 }}>Cantidad</p>
+                              {modoEdicionItems ? (
+                                <input
+                                  type="number"
+                                  min={1}
+                                  value={item.cantidad}
+                                  onChange={(e) => handleCambiarCantidadEditable(idx, Number(e.target.value))}
+                                  style={{ width: 56, textAlign: 'center', fontSize: 18, fontWeight: 800, color: '#1A3A6B', border: '1px solid #D1D5DB', borderRadius: 6, marginTop: 2 }}
+                                />
+                              ) : (
+                                <p style={{ margin: '2px 0 0', fontSize: 22, fontWeight: 800, color: '#1A3A6B' }}>{item.cantidad}</p>
+                              )}
+                            </div>
+                            <div style={{ textAlign: 'right', flexShrink: 0, minWidth: 90 }}>
+                              <p style={{ margin: 0, fontSize: 11, color: '#9CA3AF', fontWeight: 600 }}>Subtotal</p>
+                              <p style={{ margin: '2px 0 0', fontSize: 14, fontWeight: 800, color: '#1A1A2E' }}>
+                                ${(item.precio_unitario * item.cantidad).toLocaleString('es-CO')}
+                              </p>
+                            </div>
+                            {modoEdicionItems && (
+                              <button
+                                type="button"
+                                onClick={() => handleEliminarItemEditable(idx)}
+                                title="Eliminar ítem"
+                                style={{
+                                  flexShrink: 0, width: 32, height: 32, borderRadius: 8,
+                                  border: '1px solid #FCA5A5', background: '#FEF2F2', color: '#DC2626',
+                                  display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
+                                }}
+                              >
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                              </button>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Agregar ítem del catálogo (solo en modo edición) */}
+                    {modoEdicionItems && (
+                      <div style={{ marginTop: 14, background: 'white', border: '1px dashed #C7D2FE', borderRadius: 10, padding: 14 }}>
+                        <p style={{ margin: '0 0 8px', fontSize: 12, fontWeight: 700, color: '#1A3A6B' }}>Agregar ítem correcto</p>
+                        <div style={{ position: 'relative' }}>
+                          <input
+                            type="text"
+                            placeholder="Buscar ítem por código o descripción..."
+                            value={itemCatalogoSeleccionado ? itemCatalogoSeleccionado.descripcion : busquedaCatalogo}
+                            onChange={(e) => { setBusquedaCatalogo(e.target.value); setItemCatalogoSeleccionado(null); }}
+                            style={{ width: '100%', padding: '8px 10px', border: '1px solid #D1D5DB', borderRadius: 8, fontSize: 13 }}
+                          />
+                          {!itemCatalogoSeleccionado && busquedaCatalogo.trim() !== '' && catalogoFiltrado.length > 0 && (
+                            <div style={{ position: 'absolute', zIndex: 20, top: '100%', left: 0, right: 0, marginTop: 4, background: 'white', border: '1px solid #E5E7EB', borderRadius: 8, boxShadow: '0 4px 12px rgba(0,0,0,0.08)', maxHeight: 220, overflowY: 'auto' }}>
+                              {catalogoFiltrado.map((opt) => (
+                                <button
+                                  key={opt.codigo}
+                                  type="button"
+                                  onClick={() => { setItemCatalogoSeleccionado(opt); setBusquedaCatalogo(''); }}
+                                  style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 10px', fontSize: 12, border: 'none', background: 'white', cursor: 'pointer', borderBottom: '1px solid #F3F4F6' }}
+                                  onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = '#F8FAFF'; }}
+                                  onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'white'; }}
+                                >
+                                  <span style={{ fontWeight: 700, color: '#1A1A2E' }}>{opt.descripcion}</span>
+                                  <span style={{ color: '#9CA3AF' }}> — Cód. {opt.codigo} • ${opt.precio_unitario.toLocaleString('es-CO')}</span>
+                                </button>
+                              ))}
+                            </div>
+                          )}
                         </div>
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <p style={{ margin: 0, fontWeight: 700, fontSize: 14, color: '#1A1A2E' }}>
-                            {item.descripcion}
-                          </p>
-                          <p style={{ margin: '3px 0 0', fontSize: 12, color: '#1A3A6B', fontWeight: 500 }}>
-                            Cód. {item.codigo} • ${item.precio_unitario.toLocaleString('es-CO')}
-                          </p>
-                        </div>
-                        <div style={{
-                          background: '#F0F4FF',
-                          borderRadius: 8,
-                          padding: '8px 16px',
-                          textAlign: 'center',
-                          flexShrink: 0,
-                        }}>
-                          <p style={{ margin: 0, fontSize: 11, color: '#9CA3AF', fontWeight: 600 }}>
-                            Cantidad
-                          </p>
-                          <p style={{ margin: '2px 0 0', fontSize: 22, fontWeight: 800, color: '#1A3A6B' }}>
-                            {item.cantidad}
-                          </p>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 10 }}>
+                          <label style={{ fontSize: 12, color: '#6B7280', fontWeight: 600 }}>Cantidad</label>
+                          <input
+                            type="number"
+                            min={1}
+                            value={cantidadNuevoItem}
+                            onChange={(e) => setCantidadNuevoItem(Math.max(1, Number(e.target.value)))}
+                            style={{ width: 64, padding: '6px 8px', border: '1px solid #D1D5DB', borderRadius: 6, fontSize: 13 }}
+                          />
+                          <button
+                            type="button"
+                            disabled={!itemCatalogoSeleccionado}
+                            onClick={handleAgregarItemEditable}
+                            style={{
+                              marginLeft: 'auto', padding: '8px 16px', borderRadius: 8, border: 'none',
+                              background: itemCatalogoSeleccionado ? '#1A4D8F' : '#93B3D6',
+                              color: 'white', fontSize: 12, fontWeight: 700,
+                              cursor: itemCatalogoSeleccionado ? 'pointer' : 'not-allowed',
+                            }}
+                          >
+                            Añadir ítem
+                          </button>
                         </div>
                       </div>
-                    ))}
-                  </div>
+                    )}
+
+                    {/* Total ejecutado — al final de la lista, como subtotal general */}
+                    {(modoEdicionItems ? itemsEditables : itemsReporte).length > 0 && (
+                      <div style={{
+                        marginTop: 14, display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 10,
+                        borderTop: '2px solid #E5E7EB', paddingTop: 12,
+                      }}>
+                        <span style={{ fontSize: 13, fontWeight: 700, color: '#6B7280' }}>Total ejecutado</span>
+                        <span style={{ fontSize: 20, fontWeight: 800, color: '#1A3A6B' }}>
+                          ${(modoEdicionItems
+                            ? totalEjecutadoEditable
+                            : itemsReporte.reduce((sum, it) => sum + it.subtotal, 0)
+                          ).toLocaleString('es-CO')}
+                        </span>
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             )}
@@ -1257,7 +1522,7 @@ export default function AuditoriaClient() {
   </div> {/* Fin columna de fotos */}
 
             {/* Nota informativa */}
-            {reporteOrden.estado === 'Efectiva' && itemsReporte.length > 0 && (
+            {reporteOrden.estado === 'Efectiva' && itemsReporte.length > 0 && !modoEdicionItems && (
               <div style={{
                 display: 'flex',
                 alignItems: 'center',
@@ -1271,21 +1536,59 @@ export default function AuditoriaClient() {
                   <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
                 </svg>
                 <p style={{ margin: 0, fontSize: 12, color: '#1A3A6B' }}>
-                  La información de ítems y cuotas es solo de referencia y no puede ser editada desde este panel.
+                  Usa el botón &quot;Editar&quot; de la sección de ítems para corregir cuotas, cantidades o ítems si el técnico legalizó algo mal desde la app.
                 </p>
               </div>
             )}
 
             </div>
 
-            {/* Footer fijo — solo consulta, sin acciones de edición */}
-            <div className="shrink-0 flex justify-end p-4 border-t border-gray-100 bg-white">
+            {/* Footer fijo */}
+            <div className="shrink-0 flex justify-end items-center gap-3 p-4 border-t border-gray-100 bg-white">
+              {modoEdicionItems && (
+                <button
+                  onClick={() => {
+                    setModoEdicionItems(false);
+                    setItemsEditables(
+                      itemsReporte.map((it) => ({
+                        id: it.id,
+                        codigo: it.codigo,
+                        descripcion: it.descripcion,
+                        precio_unitario: it.precio_unitario,
+                        cantidad: it.cantidad,
+                      }))
+                    );
+                    setCuotasEditable(reporteOrden.numero_cuotas ?? '');
+                  }}
+                  disabled={isGuardandoEdicion}
+                  className="px-5 py-2 border border-gray-300 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+                >
+                  Cancelar edición
+                </button>
+              )}
               <button
-                onClick={() => { setReporteOrden(null); setHistorialAuditoria([]); setItemsReporte([]); setCargandoItems(false); }}
-                className="px-5 py-2 border border-gray-300 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50"
+                onClick={() => { setReporteOrden(null); setHistorialAuditoria([]); setItemsReporte([]); setCargandoItems(false); setModoEdicionItems(false); setItemsEditables([]); setCuotasEditable(''); }}
+                disabled={isGuardandoEdicion}
+                className="px-5 py-2 border border-gray-300 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
               >
                 Cerrar
               </button>
+              {modoEdicionItems && (
+                <button
+                  onClick={handleGuardarEdicionItems}
+                  disabled={isGuardandoEdicion}
+                  className="px-5 py-2 rounded-lg text-sm font-semibold text-white bg-blue-700 hover:bg-blue-800 disabled:opacity-60 flex items-center gap-2"
+                >
+                  {isGuardandoEdicion ? (
+                    <>
+                      <svg className="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+                      Guardando...
+                    </>
+                  ) : (
+                    'Guardar cambios'
+                  )}
+                </button>
+              )}
             </div>
           </div>
 
