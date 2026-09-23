@@ -94,35 +94,19 @@ function ExcelColumnFilter({
   onApply,
   onCancel,
   panelRef,
+  position,
 }: {
   options: { value: string; label: string }[];
   selected: Set<string> | null; // null = todas
   onApply: (next: Set<string> | null) => void;
   onCancel: () => void;
   panelRef?: React.RefObject<HTMLDivElement | null>;
+  position: { top: number; left: number };
 }) {
   const allValues = useMemo(() => options.map(o => o.value), [options]);
   const [search, setSearch] = useState('');
   const [checked, setChecked] = useState<Set<string>>(() => new Set(selected ?? allValues));
-
-  // Al escribir en el buscador, los valores que YA NO coinciden deben salir
-  // de la selección (no solo ocultarse). Sin esto, si el usuario busca "102"
-  // y da Aceptar sin tocar checkboxes, el conteo de marcados sigue siendo
-  // igual al total de opciones y el filtro se interpreta como "todo
-  // seleccionado" → no filtra nada, aunque en pantalla solo se vea "102664".
-  useEffect(() => {
-    setChecked(prev => {
-      const matching = new Set(
-        options
-          .filter(o => o.label.toLowerCase().includes(search.toLowerCase()))
-          .map(o => o.value)
-      );
-      const next = new Set<string>();
-      prev.forEach(v => { if (matching.has(v)) next.add(v); });
-      return next;
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [search]);
+  const [hasInteracted, setHasInteracted] = useState(false);
 
   const filteredOptions = useMemo(
     () => options.filter(o => o.label.toLowerCase().includes(search.toLowerCase())),
@@ -132,6 +116,7 @@ function ExcelColumnFilter({
   const allFilteredChecked = filteredOptions.length > 0 && filteredOptions.every(o => checked.has(o.value));
 
   const toggleAllFiltered = () => {
+    setHasInteracted(true);
     setChecked(prev => {
       const next = new Set(prev);
       if (allFilteredChecked) {
@@ -144,6 +129,7 @@ function ExcelColumnFilter({
   };
 
   const toggleOne = (value: string) => {
+    setHasInteracted(true);
     setChecked(prev => {
       const next = new Set(prev);
       if (next.has(value)) next.delete(value); else next.add(value);
@@ -154,8 +140,8 @@ function ExcelColumnFilter({
   return (
     <div
       ref={panelRef}
-      className="absolute z-30 top-full left-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg p-2 normal-case font-normal text-gray-700"
-      style={{ width: '240px' }}
+      className="fixed z-50 bg-white border border-gray-200 rounded-lg shadow-lg p-2 normal-case font-normal text-gray-700"
+      style={{ top: position.top, left: position.left, width: '240px' }}
     >
       <input
         type="text"
@@ -187,7 +173,16 @@ function ExcelColumnFilter({
         </button>
         <button
           type="button"
-          onClick={() => onApply(checked.size === allValues.length ? null : new Set(checked))}
+          onClick={() => {
+            if (!hasInteracted && search.trim() !== '') {
+              // Solo buscó, no tocó ningún checkbox: aplica exactamente lo visible.
+              onApply(new Set(filteredOptions.map((o) => o.value)));
+            } else if (checked.size === allValues.length) {
+              onApply(null); // Todo marcado = sin filtro
+            } else {
+              onApply(new Set(checked));
+            }
+          }}
           className="text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-md px-3 py-1.5"
         >
           Aceptar
@@ -216,6 +211,7 @@ export default function DespachoTableClient() {
   type ExcelFilterKey = 'orden' | 'contrato' | 'ubicacion' | 'trabajo' | 'estado' | 'sla' | 'fechaProg' | 'tecnico';
 
   const [openColumnFilter, setOpenColumnFilter] = useState<ExcelFilterKey | null>(null);
+  const [columnFilterPosition, setColumnFilterPosition] = useState<{ top: number; left: number } | null>(null);
   const columnFilterRef = useRef<HTMLDivElement>(null);
 
   const [ordenSelected, setOrdenSelected] = useState<Set<string> | null>(null);
@@ -407,17 +403,28 @@ export default function DespachoTableClient() {
       if (orParts.length > 0) query.or(orParts.join(','));
     }
     
-    // F. Programada: valores puntuales + opción "(Vacías)" para fecha_programada NULL
+    // F. Programada: cada fecha seleccionada se compara por RANGO DE DÍA COMPLETO
+    // (00:00 del día hasta 00:00 del día siguiente), no por igualdad exacta,
+    // porque fecha_programada puede traer hora/zona horaria pegada en algunos
+    // registros y una comparación de igualdad no los encontraría.
     if (fechaProgSel && fechaProgSel.size > 0) {
       const wantsVacio = fechaProgSel.has('__VACIO__');
-      const isoFechas = Array.from(fechaProgSel)
-        .filter((f) => f !== '__VACIO__')
-        .map((f) => {
-          const [d, m, y] = f.split('/');
-          return `${y}-${m}-${d}`;
-        });
+      const fechasSeleccionadas = Array.from(fechaProgSel).filter((f) => f !== '__VACIO__');
+
       const orParts: string[] = [];
-      if (isoFechas.length > 0) orParts.push(`fecha_programada.in.(${isoFechas.join(',')})`);
+      fechasSeleccionadas.forEach((f) => {
+        const [d, m, y] = f.split('/');
+        const inicio = `${y}-${m}-${d}`;
+
+        const siguiente = new Date(Number(y), Number(m) - 1, Number(d) + 1);
+        const yyyy = siguiente.getFullYear();
+        const mm = String(siguiente.getMonth() + 1).padStart(2, '0');
+        const dd = String(siguiente.getDate()).padStart(2, '0');
+        const fin = `${yyyy}-${mm}-${dd}`;
+
+        orParts.push(`and(fecha_programada.gte.${inicio},fecha_programada.lt.${fin})`);
+      });
+
       if (wantsVacio) orParts.push('fecha_programada.is.null');
       if (orParts.length > 0) query.or(orParts.join(','));
     }
@@ -1192,7 +1199,12 @@ export default function DespachoTableClient() {
                     <button
                       type="button"
                       data-colfilter-caret="true"
-                      onClick={(e) => { e.stopPropagation(); setOpenColumnFilter(p => p === 'orden' ? null : 'orden'); }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        setColumnFilterPosition({ top: rect.bottom + 4, left: rect.left });
+                        setOpenColumnFilter(p => p === 'orden' ? null : 'orden');
+                      }}
                       className={`p-0.5 rounded hover:bg-gray-200 ${ordenSelected !== null ? 'text-blue-600' : 'text-gray-400'}`}
                     >
                       <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" /></svg>
@@ -1201,6 +1213,7 @@ export default function DespachoTableClient() {
                   {openColumnFilter === 'orden' && (
                     <ExcelColumnFilter
                       panelRef={columnFilterRef}
+                      position={columnFilterPosition ?? { top: 0, left: 0 }}
                       options={ordenesUnicas.map(o => ({ value: o, label: o }))}
                       selected={ordenSelected}
                       onApply={(next) => { setOrdenSelected(next); setOpenColumnFilter(null); }}
@@ -1216,7 +1229,12 @@ export default function DespachoTableClient() {
                     <button
                       type="button"
                       data-colfilter-caret="true"
-                      onClick={(e) => { e.stopPropagation(); setOpenColumnFilter(p => p === 'contrato' ? null : 'contrato'); }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        setColumnFilterPosition({ top: rect.bottom + 4, left: rect.left });
+                        setOpenColumnFilter(p => p === 'contrato' ? null : 'contrato');
+                      }}
                       className={`p-0.5 rounded hover:bg-gray-200 ${contratoSelected !== null ? 'text-blue-600' : 'text-gray-400'}`}
                     >
                       <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" /></svg>
@@ -1225,6 +1243,7 @@ export default function DespachoTableClient() {
                   {openColumnFilter === 'contrato' && (
                     <ExcelColumnFilter
                       panelRef={columnFilterRef}
+                      position={columnFilterPosition ?? { top: 0, left: 0 }}
                       options={contratosUnicos.map(c => ({ value: c, label: c }))}
                       selected={contratoSelected}
                       onApply={(next) => { setContratoSelected(next); setOpenColumnFilter(null); }}
@@ -1240,7 +1259,12 @@ export default function DespachoTableClient() {
                     <button
                       type="button"
                       data-colfilter-caret="true"
-                      onClick={(e) => { e.stopPropagation(); setOpenColumnFilter(p => p === 'ubicacion' ? null : 'ubicacion'); }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        setColumnFilterPosition({ top: rect.bottom + 4, left: rect.left });
+                        setOpenColumnFilter(p => p === 'ubicacion' ? null : 'ubicacion');
+                      }}
                       className={`p-0.5 rounded hover:bg-gray-200 ${ubicacionSelected !== null ? 'text-blue-600' : 'text-gray-400'}`}
                     >
                       <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" /></svg>
@@ -1249,6 +1273,7 @@ export default function DespachoTableClient() {
                   {openColumnFilter === 'ubicacion' && (
                     <ExcelColumnFilter
                       panelRef={columnFilterRef}
+                      position={columnFilterPosition ?? { top: 0, left: 0 }}
                       options={localidadesUnicas.map(l => ({ value: l, label: l }))}
                       selected={ubicacionSelected}
                       onApply={(next) => { setUbicacionSelected(next); setOpenColumnFilter(null); }}
@@ -1264,7 +1289,12 @@ export default function DespachoTableClient() {
                     <button
                       type="button"
                       data-colfilter-caret="true"
-                      onClick={(e) => { e.stopPropagation(); setOpenColumnFilter(p => p === 'trabajo' ? null : 'trabajo'); }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        setColumnFilterPosition({ top: rect.bottom + 4, left: rect.left });
+                        setOpenColumnFilter(p => p === 'trabajo' ? null : 'trabajo');
+                      }}
                       className={`p-0.5 rounded hover:bg-gray-200 ${trabajoSelected !== null ? 'text-blue-600' : 'text-gray-400'}`}
                     >
                       <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" /></svg>
@@ -1273,6 +1303,7 @@ export default function DespachoTableClient() {
                   {openColumnFilter === 'trabajo' && (
                     <ExcelColumnFilter
                       panelRef={columnFilterRef}
+                      position={columnFilterPosition ?? { top: 0, left: 0 }}
                       options={descripcionesUnicas.map(d => ({ value: d, label: d }))}
                       selected={trabajoSelected}
                       onApply={(next) => { setTrabajoSelected(next); setOpenColumnFilter(null); }}
@@ -1288,7 +1319,12 @@ export default function DespachoTableClient() {
                     <button
                       type="button"
                       data-colfilter-caret="true"
-                      onClick={(e) => { e.stopPropagation(); setOpenColumnFilter(p => p === 'estado' ? null : 'estado'); }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        setColumnFilterPosition({ top: rect.bottom + 4, left: rect.left });
+                        setOpenColumnFilter(p => p === 'estado' ? null : 'estado');
+                      }}
                       className={`p-0.5 rounded hover:bg-gray-200 ${estadoColSelected !== null ? 'text-blue-600' : 'text-gray-400'}`}
                     >
                       <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" /></svg>
@@ -1297,6 +1333,7 @@ export default function DespachoTableClient() {
                   {openColumnFilter === 'estado' && (
                     <ExcelColumnFilter
                       panelRef={columnFilterRef}
+                      position={columnFilterPosition ?? { top: 0, left: 0 }}
                       options={[{ value: 'Pendiente', label: 'Pendiente' }, { value: 'Programada', label: 'Programada' }]}
                       selected={estadoColSelected}
                       onApply={(next) => { setEstadoColSelected(next); setOpenColumnFilter(null); }}
@@ -1312,7 +1349,12 @@ export default function DespachoTableClient() {
                     <button
                       type="button"
                       data-colfilter-caret="true"
-                      onClick={(e) => { e.stopPropagation(); setOpenColumnFilter(p => p === 'sla' ? null : 'sla'); }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        setColumnFilterPosition({ top: rect.bottom + 4, left: rect.left });
+                        setOpenColumnFilter(p => p === 'sla' ? null : 'sla');
+                      }}
                       className={`p-0.5 rounded hover:bg-gray-200 ${slaSelected !== null ? 'text-blue-600' : 'text-gray-400'}`}
                     >
                       <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" /></svg>
@@ -1321,6 +1363,7 @@ export default function DespachoTableClient() {
                   {openColumnFilter === 'sla' && (
                     <ExcelColumnFilter
                       panelRef={columnFilterRef}
+                      position={columnFilterPosition ?? { top: 0, left: 0 }}
                       options={slaDiasUnicos.map(d => ({ value: d, label: `${d} ${d === '1' ? 'día' : 'días'}` }))}
                       selected={slaSelected}
                       onApply={(next) => { setSlaSelected(next); setOpenColumnFilter(null); }}
@@ -1336,7 +1379,12 @@ export default function DespachoTableClient() {
                     <button
                       type="button"
                       data-colfilter-caret="true"
-                      onClick={(e) => { e.stopPropagation(); setOpenColumnFilter(p => p === 'fechaProg' ? null : 'fechaProg'); }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        setColumnFilterPosition({ top: rect.bottom + 4, left: rect.left });
+                        setOpenColumnFilter(p => p === 'fechaProg' ? null : 'fechaProg');
+                      }}
                       className={`p-0.5 rounded hover:bg-gray-200 ${fechaProgSelected !== null ? 'text-blue-600' : 'text-gray-400'}`}
                     >
                       <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" /></svg>
@@ -1345,6 +1393,7 @@ export default function DespachoTableClient() {
                   {openColumnFilter === 'fechaProg' && (
                     <ExcelColumnFilter
                       panelRef={columnFilterRef}
+                      position={columnFilterPosition ?? { top: 0, left: 0 }}
                       options={fechasProgUnicas.map(f => ({ value: f, label: f === '__VACIO__' ? '(Vacías)' : f }))}
                       selected={fechaProgSelected}
                       onApply={(next) => { setFechaProgSelected(next); setOpenColumnFilter(null); }}
@@ -1360,7 +1409,12 @@ export default function DespachoTableClient() {
                     <button
                       type="button"
                       data-colfilter-caret="true"
-                      onClick={(e) => { e.stopPropagation(); setOpenColumnFilter(p => p === 'tecnico' ? null : 'tecnico'); }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        setColumnFilterPosition({ top: rect.bottom + 4, left: rect.left });
+                        setOpenColumnFilter(p => p === 'tecnico' ? null : 'tecnico');
+                      }}
                       className={`p-0.5 rounded hover:bg-gray-200 ${tecnicoColSelected !== null ? 'text-blue-600' : 'text-gray-400'}`}
                     >
                       <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" /></svg>
@@ -1369,6 +1423,7 @@ export default function DespachoTableClient() {
                   {openColumnFilter === 'tecnico' && (
                     <ExcelColumnFilter
                       panelRef={columnFilterRef}
+                      position={columnFilterPosition ?? { top: 0, left: 0 }}
                       options={[{ value: 'SIN_ASIGNAR', label: 'Sin asignar' }, ...tecnicos.map(t => ({ value: t.id_usuario, label: t.nombre }))]}
                       selected={tecnicoColSelected}
                       onApply={(next) => { setTecnicoColSelected(next); setOpenColumnFilter(null); }}
