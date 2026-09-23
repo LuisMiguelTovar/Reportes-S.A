@@ -72,6 +72,7 @@ export default function AuditoriaClient() {
   const [itemsEditables, setItemsEditables] = useState<ItemEditable[]>([]);
   const [cuotasEditable, setCuotasEditable] = useState<number | ''>('');
   const [isGuardandoEdicion, setIsGuardandoEdicion] = useState(false);
+  const [entradaCopiadaIndex, setEntradaCopiadaIndex] = useState<number | null>(null);
 
   const [catalogoItems, setCatalogoItems] = useState<ItemCatalogo[]>([]);
   const [busquedaCatalogo, setBusquedaCatalogo] = useState('');
@@ -251,6 +252,32 @@ export default function AuditoriaClient() {
     };
     fetchCatalogoItems();
   }, []);
+  const construirTextoEntrada = (h: any): string => {
+    const fecha = new Date(h.fecha).toLocaleDateString('es-CO', { timeZone: 'America/Bogota' });
+    const tecnico = h.autor_nombre || h.usuario;
+    const badgeLabel = h.estado === 'Cancelada' ? 'Incumplida' : h.estado;
+
+    if (h.comentario) {
+      return `${fecha} · ${badgeLabel} · ${tecnico} / ${h.comentario}`;
+    }
+
+    if (h.estado === 'Efectiva') {
+      const itemsTexto = itemsReporte
+        .map((it) => `Se realizó servicio Cód. ${it.codigo} - ${it.descripcion} (x${it.cantidad})`)
+        .join('; ');
+      const cuotasTexto = reporteOrden?.numero_cuotas != null ? ` Cuotas: ${reporteOrden.numero_cuotas}` : '';
+      return `${fecha} · Técnico: ${tecnico}${itemsTexto ? ` / ${itemsTexto}` : ''}${cuotasTexto}`;
+    }
+
+    if (h.estado === 'Cancelada') {
+      const causalTexto = h.causal_codigo && causalLabelPorCodigo[h.causal_codigo]
+        ? `${h.causal_codigo}-${causalLabelPorCodigo[h.causal_codigo]}`
+        : (h.causal_codigo || '');
+      return `${fecha} · Técnico: ${tecnico}${causalTexto ? ` / Orden incumplida - Causal: ${causalTexto}` : ' / Orden incumplida'}`;
+    }
+
+    return '';
+  };
 
   const getTecnicoNombre = (id?: string) => {
     if (!id) return 'Sin asignar';
@@ -1379,19 +1406,57 @@ export default function AuditoriaClient() {
                             {/* Comentario — con prefijo fecha+causal+técnico dentro del mismo párrafo,
                                 para que al copiar el texto quede autocontenido. El comentario original
                                 NO se modifica, solo se le antepone este encabezado dentro del párrafo. */}
-                            {h.comentario ? (
-                              <p className="text-sm text-gray-800 mb-3">
-                                {new Date(h.fecha).toLocaleDateString('es-CO', { timeZone: 'America/Bogota' })}
-                                {' · '}
-                                {badgeLabel}
-                                {' · '}
-                                {h.autor_nombre || h.usuario}
-                                {' / '}
-                                {h.comentario}
-                              </p>
-                            ) : (
-                              <p className="text-xs text-gray-400 italic mb-3">No se registró comentario para esta actualización.</p>
-                            )}
+                            {(() => {
+                              const textoEntrada = construirTextoEntrada(h);
+                              if (!textoEntrada) {
+                                return (
+                                  <p className="text-xs text-gray-400 italic mb-3">No se registró comentario para esta actualización.</p>
+                                );
+                              }
+                              return (
+                                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginBottom: 12 }}>
+                                  <p className="text-sm text-gray-800" style={{ whiteSpace: 'pre-wrap', flex: 1, margin: 0 }}>
+                                    {textoEntrada}
+                                  </p>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      navigator.clipboard.writeText(textoEntrada);
+                                      setEntradaCopiadaIndex(i);
+                                      setTimeout(() => setEntradaCopiadaIndex((prev) => (prev === i ? null : prev)), 1800);
+                                    }}
+                                    title="Copiar"
+                                    style={{
+                                      flexShrink: 0, display: 'flex', alignItems: 'center', gap: 4,
+                                      padding: '4px 10px',
+                                      background: entradaCopiadaIndex === i ? '#DCFCE7' : '#fff',
+                                      border: entradaCopiadaIndex === i ? '1px solid #22C55E' : '1px solid #E6EAF2',
+                                      borderRadius: 8,
+                                      cursor: 'pointer', fontSize: 12,
+                                      color: entradaCopiadaIndex === i ? '#166534' : '#374151',
+                                      fontWeight: 500,
+                                      transition: 'background 0.15s, border-color 0.15s, color 0.15s',
+                                    }}
+                                  >
+                                    {entradaCopiadaIndex === i ? (
+                                      <>
+                                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                                          <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                                        </svg>
+                                        ¡Copiado!
+                                      </>
+                                    ) : (
+                                      <>
+                                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                          <rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
+                                        </svg>
+                                        Copiar
+                                      </>
+                                    )}
+                                  </button>
+                                </div>
+                              );
+                            })()}
 
                             {/* Equipo de trabajo (solo si existe) */}
                             {h.equipo_trabajo && h.equipo_trabajo.length > 0 && (
