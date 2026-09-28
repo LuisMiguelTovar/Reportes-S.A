@@ -208,7 +208,7 @@ export default function DespachoTableClient() {
 
   // ── Filtros tipo Excel en encabezados de columna (selección múltiple) ──
   // Cada uno: null = "todas las opciones" (sin filtro). Set<string> = solo esos valores están incluidos.
-  type ExcelFilterKey = 'orden' | 'contrato' | 'ubicacion' | 'trabajo' | 'estado' | 'sla' | 'fechaProg' | 'tecnico';
+  type ExcelFilterKey = 'orden' | 'contrato' | 'ubicacion' | 'trabajo' | 'estado' | 'sla' | 'fechaProg' | 'fechaAsig' | 'tecnico';
 
   const [openColumnFilter, setOpenColumnFilter] = useState<ExcelFilterKey | null>(null);
   const [columnFilterPosition, setColumnFilterPosition] = useState<{ top: number; left: number } | null>(null);
@@ -221,6 +221,7 @@ export default function DespachoTableClient() {
   const [estadoColSelected, setEstadoColSelected] = useState<Set<string> | null>(null);
   const [slaSelected, setSlaSelected] = useState<Set<string> | null>(null);
   const [fechaProgSelected, setFechaProgSelected] = useState<Set<string> | null>(null);
+  const [fechaAsigSelected, setFechaAsigSelected] = useState<Set<string> | null>(null);
   const [tecnicoColSelected, setTecnicoColSelected] = useState<Set<string> | null>(null);
 
   // Opciones únicas para cada checklist (se cargan junto con localidadesUnicas/descripcionesUnicas)
@@ -228,6 +229,7 @@ export default function DespachoTableClient() {
   const [contratosUnicos, setContratosUnicos] = useState<string[]>([]);
   const [slaDiasUnicos, setSlaDiasUnicos] = useState<string[]>([]);
   const [fechasProgUnicas, setFechasProgUnicas] = useState<string[]>([]); // 'DD/MM/AAAA' o '__VACIO__'
+  const [fechasAsigUnicas, setFechasAsigUnicas] = useState<string[]>([]);
   const [selectedOrdenes, setSelectedOrdenes] = useState<string[]>([]);
   const [tecnicos, setTecnicos] = useState<Tecnico[]>([]);
   const [selectedTecnicoId, setSelectedTecnicoId] = useState('');
@@ -324,6 +326,7 @@ export default function DespachoTableClient() {
     estadoColSel: Set<string> | null,
     slaSel: Set<string> | null,
     fechaProgSel: Set<string> | null,
+    fechaAsigSel: Set<string> | null,
     tecnicoColSel: Set<string> | null,
     withCount: boolean
   ) => {
@@ -429,6 +432,29 @@ export default function DespachoTableClient() {
       if (orParts.length > 0) query.or(orParts.join(','));
     }
 
+    // Fecha Asignación: mismo criterio de rango de día completo que F. Programada
+    if (fechaAsigSel && fechaAsigSel.size > 0) {
+      const wantsVacioAsig = fechaAsigSel.has('__VACIO__');
+      const fechasAsigSeleccionadas = Array.from(fechaAsigSel).filter((f) => f !== '__VACIO__');
+
+      const orPartsAsig: string[] = [];
+      fechasAsigSeleccionadas.forEach((f) => {
+        const [d, m, y] = f.split('/');
+        const inicio = `${y}-${m}-${d}`;
+
+        const siguiente = new Date(Number(y), Number(m) - 1, Number(d) + 1);
+        const yyyy = siguiente.getFullYear();
+        const mm = String(siguiente.getMonth() + 1).padStart(2, '0');
+        const dd = String(siguiente.getDate()).padStart(2, '0');
+        const fin = `${yyyy}-${mm}-${dd}`;
+
+        orPartsAsig.push(`and(fecha_asignacion_ot.gte.${inicio},fecha_asignacion_ot.lt.${fin})`);
+      });
+
+      if (wantsVacioAsig) orPartsAsig.push('fecha_asignacion_ot.is.null');
+      if (orPartsAsig.length > 0) query.or(orPartsAsig.join(','));
+    }
+
     // Orden: SLA descendente = fecha_asignacion_ot ascendente (más vieja primero)
     query.order('fecha_asignacion_ot', { ascending: true });
 
@@ -442,7 +468,7 @@ export default function DespachoTableClient() {
 
     const query = buildFilteredQuery(
       debouncedSearch, localidadFilter, descripcionFilter, fechaFilter, tecnicoFilter, estadoFilter,
-      ordenSelected, contratoSelected, ubicacionSelected, trabajoSelected, estadoColSelected, slaSelected, fechaProgSelected, tecnicoColSelected, true
+      ordenSelected, contratoSelected, ubicacionSelected, trabajoSelected, estadoColSelected, slaSelected, fechaProgSelected, fechaAsigSelected, tecnicoColSelected, true
     );
     const from = (currentPage - 1) * PAGE_SIZE;
     const to = from + PAGE_SIZE - 1;
@@ -459,7 +485,7 @@ export default function DespachoTableClient() {
     }
     setLoadingOrdenes(false);
     setIsInitialLoad(false);
-  }, [buildFilteredQuery, debouncedSearch, localidadFilter, descripcionFilter, fechaFilter, tecnicoFilter, estadoFilter, ordenSelected, contratoSelected, ubicacionSelected, trabajoSelected, estadoColSelected, slaSelected, fechaProgSelected, tecnicoColSelected, currentPage]);
+  }, [buildFilteredQuery, debouncedSearch, localidadFilter, descripcionFilter, fechaFilter, tecnicoFilter, estadoFilter, ordenSelected, contratoSelected, ubicacionSelected, trabajoSelected, estadoColSelected, slaSelected, fechaProgSelected, fechaAsigSelected, tecnicoColSelected, currentPage]);
 
   type FilaFiltroOpciones = {
     orden_trabajo: string;
@@ -498,12 +524,23 @@ export default function DespachoTableClient() {
       return new Date(ya, ma - 1, da).getTime() - new Date(yb, mb - 1, db).getTime();
     });
 
+    const fechasAsig = [...new Set(
+      data.map((d) => (d.fecha_asignacion_ot ? formatearFechaPura(d.fecha_asignacion_ot) : '__VACIO__'))
+    )].sort((a, b) => {
+      if (a === '__VACIO__') return 1;
+      if (b === '__VACIO__') return -1;
+      const [da, ma, ya] = a.split('/').map(Number);
+      const [db, mb, yb] = b.split('/').map(Number);
+      return new Date(ya, ma - 1, da).getTime() - new Date(yb, mb - 1, db).getTime();
+    });
+
     setLocalidadesUnicas(locs);
     setDescripcionesUnicas(descs);
     setOrdenesUnicas(ordenes);
     setContratosUnicos(contratos);
     setSlaDiasUnicos(dias);
     setFechasProgUnicas(fechas);
+    setFechasAsigUnicas(fechasAsig);
   }, []);
 
   // Lee la fecha de la última carga de Excel desde la tabla app_metadata.
@@ -548,7 +585,7 @@ export default function DespachoTableClient() {
   useEffect(() => {
     setCurrentPage(1);
     setSelectedOrdenes([]);
-  }, [debouncedSearch, localidadFilter, descripcionFilter, fechaFilter, tecnicoFilter, estadoFilter, ordenSelected, contratoSelected, ubicacionSelected, trabajoSelected, estadoColSelected, slaSelected, fechaProgSelected, tecnicoColSelected]);
+  }, [debouncedSearch, localidadFilter, descripcionFilter, fechaFilter, tecnicoFilter, estadoFilter, ordenSelected, contratoSelected, ubicacionSelected, trabajoSelected, estadoColSelected, slaSelected, fechaProgSelected, fechaAsigSelected, tecnicoColSelected]);
 
   // ── Limpiar selección al cambiar de página ──
   useEffect(() => {
@@ -981,7 +1018,7 @@ export default function DespachoTableClient() {
     // Query con los mismos filtros activos pero SIN .range()
     const query = buildFilteredQuery(
       debouncedSearch, localidadFilter, descripcionFilter, fechaFilter, tecnicoFilter, estadoFilter,
-      ordenSelected, contratoSelected, ubicacionSelected, trabajoSelected, estadoColSelected, slaSelected, fechaProgSelected, tecnicoColSelected, false
+      ordenSelected, contratoSelected, ubicacionSelected, trabajoSelected, estadoColSelected, slaSelected, fechaProgSelected, fechaAsigSelected, tecnicoColSelected, false
     );
     const { data: allFiltered, error } = await query;
 
@@ -995,6 +1032,7 @@ export default function DespachoTableClient() {
       'Localidad',
       'Descripción del Trabajo',
       'Días SLA',
+      'Fecha Asignación',
       'Estado Asignación',
       'Técnico Asignado',
       'Fecha Programada',
@@ -1012,6 +1050,7 @@ export default function DespachoTableClient() {
       const nombre = getTecnicoNombre(row.id_tecnico_asignado as string);
       const estadoAsig = !nombre ? 'Sin asignar' : nombre === 'Programado' ? 'Programado' : 'Asignada';
       const tecnicoDisplay = nombre === 'Programado' ? '—' : (nombre || 'Sin asignar');
+      const fechaAsig = formatearFechaPura(row.fecha_asignacion_ot);
       const fechaProg = formatearFechaPura(row.fecha_programada);
       return [
         row.orden_trabajo || '',
@@ -1021,6 +1060,7 @@ export default function DespachoTableClient() {
         row.localidad || '',
         row.descripcion_del_trabajo || '',
         String(diasSLA),
+        fechaAsig,
         estadoAsig,
         tecnicoDisplay,
         fechaProg,
@@ -1168,6 +1208,7 @@ export default function DespachoTableClient() {
               setEstadoColSelected(null);
               setSlaSelected(null);
               setFechaProgSelected(null);
+              setFechaAsigSelected(null);
               setTecnicoColSelected(null);
             }}
             className="ml-auto flex items-center gap-1.5 text-sm text-blue-600 hover:text-blue-700 whitespace-nowrap"
@@ -1372,6 +1413,36 @@ export default function DespachoTableClient() {
                   )}
                 </th>
 
+                {/* Fecha Asignación */}
+                <th className="py-2.5 px-2.5 relative" style={{ width: '120px' }}>
+                  <div className="flex items-center gap-1">
+                    <span>Fecha Asignación</span>
+                    <button
+                      type="button"
+                      data-colfilter-caret="true"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        setColumnFilterPosition({ top: rect.bottom + 4, left: rect.left });
+                        setOpenColumnFilter(p => p === 'fechaAsig' ? null : 'fechaAsig');
+                      }}
+                      className={`p-0.5 rounded hover:bg-gray-200 ${fechaAsigSelected !== null ? 'text-blue-600' : 'text-gray-400'}`}
+                    >
+                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" /></svg>
+                    </button>
+                  </div>
+                  {openColumnFilter === 'fechaAsig' && (
+                    <ExcelColumnFilter
+                      panelRef={columnFilterRef}
+                      position={columnFilterPosition ?? { top: 0, left: 0 }}
+                      options={fechasAsigUnicas.map(f => ({ value: f, label: f === '__VACIO__' ? '(Vacías)' : f }))}
+                      selected={fechaAsigSelected}
+                      onApply={(next) => { setFechaAsigSelected(next); setOpenColumnFilter(null); }}
+                      onCancel={() => setOpenColumnFilter(null)}
+                    />
+                  )}
+                </th>
+
                 {/* F. Programada */}
                 <th className="py-2.5 px-2.5 relative" style={{ width: '120px' }}>
                   <div className="flex items-center gap-1">
@@ -1437,7 +1508,7 @@ export default function DespachoTableClient() {
             <tbody className="text-xs text-gray-700">
               {ordenes.length === 0 ? (
                 <tr>
-                  <td colSpan={10} className="p-8 text-center text-gray-500">
+                  <td colSpan={11} className="p-8 text-center text-gray-500">
                     No se encontraron órdenes que coincidan con los filtros.
                   </td>
                 </tr>
@@ -1500,6 +1571,9 @@ export default function DespachoTableClient() {
                           </span>
                         );
                       })()}
+                    </td>
+                    <td className="py-2.5 px-2.5 whitespace-nowrap">
+                      {formatearFechaPura(row.fecha_asignacion_ot)}
                     </td>
                     <td className="py-2.5 px-2.5 whitespace-nowrap">
                       {formatearFechaPura(row.fecha_programada)}
