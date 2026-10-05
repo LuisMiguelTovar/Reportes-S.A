@@ -64,6 +64,17 @@ export default function Sidebar() {
           Auditoría y Soportes
         </Link>
         <Link 
+          href="/nomina" 
+          className={`flex items-center gap-3 px-4 py-2 rounded-xl text-[14px] font-medium transition-all duration-150 ${
+            pathname === '/nomina' 
+              ? 'bg-[#2563EB] text-white shadow-none' 
+              : 'hover:bg-[#172554] text-slate-400 hover:text-slate-100'
+          }`}
+        >
+          <svg className={`w-5 h-5 ${pathname === '/nomina' ? 'opacity-100' : 'opacity-70'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 7h6m-6 4h6m-6 4h3m-9 6h12a2 2 0 002-2V7a2 2 0 00-2-2H9a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
+          Nómina
+        </Link>
+        <Link 
           href="/trazabilidad" 
           className={`flex items-center gap-3 px-4 py-2 rounded-xl text-[14px] font-medium transition-all duration-150 whitespace-nowrap ${
             pathname === '/trazabilidad' 
