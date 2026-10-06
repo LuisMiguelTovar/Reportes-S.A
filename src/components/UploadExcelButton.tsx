@@ -27,6 +27,8 @@ const normalizeLocalidad = (rawLocalidad: string) => {
   // Extraer el texto dentro del último par de paréntesis
   const match = rawLocalidad.match(/\(([^)]+)\)[^(]*$/);
   let normalized = match ? match[1].trim().toUpperCase() : rawLocalidad.trim().toUpperCase();
+  // Quitar prefijos numéricos tipo "35-JAMUNDI" → "JAMUNDI"
+  normalized = normalized.replace(/^\d+\s*-\s*/, '');
   // Unificar variantes conocidas
   if (normalized === 'SANTIAGO DE CALI') normalized = 'CALI';
   return normalized;
