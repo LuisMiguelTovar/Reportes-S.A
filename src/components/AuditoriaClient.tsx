@@ -1341,18 +1341,6 @@ export default function AuditoriaClient() {
               </div>
             )}
 
-            {/* ── Editor de equipo de trabajo (solo para órdenes Efectiva) ── */}
-            {reporteOrden.estado === 'Efectiva' && (
-              <div className="mb-4">
-                <EquipoTrabajoEditor
-                  ordenTrabajo={reporteOrden.orden_trabajo}
-                  onSaved={() => {
-                    fetchHistorialAuditoria(reporteOrden.orden_trabajo);
-                  }}
-                />
-              </div>
-            )}
-
 {/* Fotos (sin tarjeta de cuotas al lado) */}
 <div>
     <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
@@ -1592,6 +1580,18 @@ export default function AuditoriaClient() {
                   </div>
                 );
               })()}
+
+            {/* ── Editor de equipo de trabajo (solo para órdenes Efectiva) ── */}
+            {reporteOrden.estado === 'Efectiva' && (
+              <div className="mt-4 mb-4">
+                <EquipoTrabajoEditor
+                  ordenTrabajo={reporteOrden.orden_trabajo}
+                  onSaved={() => {
+                    fetchHistorialAuditoria(reporteOrden.orden_trabajo);
+                  }}
+                />
+              </div>
+            )}
 
               {/* Caja informativa */}
               <div className="bg-blue-50 border border-blue-100 rounded-xl p-3 text-xs text-blue-700 mt-4">
