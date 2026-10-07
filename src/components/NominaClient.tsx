@@ -34,6 +34,8 @@ type FilaItem = {
   totalFactura: number;
   totalTecnico: number;
   fechaCierre: string | null; // YYYY-MM-DD en hora de Colombia
+  fechaCierreIso: string | null; // timestamp completo de cierre (solo para el Excel)
+  unidadPago: string; // SOLO para el Excel: técnico individual o equipo unido con guion ("Danilo Caracas-Efren Banguera")
 };
 
 type FilaConNombre = FilaItem & { tecnico: string };
@@ -90,6 +92,10 @@ const compactMoney = (n: number) =>
     : `$${Math.round(n / 1000).toLocaleString('es-CO')} mil`;
 
 const nombreBonito = (n: string) => n.toLowerCase().replace(/(^|\s)\S/g, (m) => m.toUpperCase());
+
+const normalizarNombre = (s: string) =>
+  s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
+
 const iniciales = (n: string) =>
   n.split(' ').filter(Boolean).slice(0, 2).map((p) => p[0]?.toUpperCase() ?? '').join('');
 
@@ -318,13 +324,86 @@ export default function NominaClient() {
         return r.data ?? [];
       });
 
+      // ── Perfiles, miembros de equipos y equipo registrado en el cierre de cada orden ──
+      const [perfRes, miembrosRes, histRes] = await Promise.all([
+        supabase.from('perfiles').select('id_usuario, nombre, rol').in('rol', ['Técnico', 'Supervisor']),
+        supabase.from('equipos_supervisor').select('nombre_miembro').eq('activo', true),
+        Promise.all(
+          trozos.map((t) =>
+            supabase
+              .from('historial_ordenes')
+              .select('orden_trabajo, equipo_trabajo, fecha')
+              .in('orden_trabajo', t)
+              .eq('estado', 'Efectiva')
+              .order('fecha', { ascending: true })
+          )
+        ),
+      ]);
+      if (perfRes.error) throw perfRes.error;
+      if (miembrosRes.error) throw miembrosRes.error;
+
+      type PerfilRol = { id_usuario: string; nombre: string; rol: string };
+      const perfiles = (perfRes.data ?? []) as PerfilRol[];
+      const perfilPorId = new Map(perfiles.map((p) => [p.id_usuario, p]));
+      const perfilPorNombre = new Map(perfiles.map((p) => [normalizarNombre(p.nombre), p]));
+      // Miembros de equipos_supervisor sin perfil: participantes válidos, agrupados por nombre normalizado
+      const miembroPorNombre = new Map<string, string>();
+      (miembrosRes.data ?? []).forEach((m) => {
+        const k = normalizarNombre(m.nombre_miembro);
+        if (k && !perfilPorNombre.has(k)) miembroPorNombre.set(k, m.nombre_miembro);
+      });
+
+      const equipoPorOrden = new Map<string, string[]>();
+      histRes.forEach((r) => {
+        if (r.error) throw r.error;
+        (r.data ?? []).forEach((h) => {
+          if (Array.isArray(h.equipo_trabajo) && h.equipo_trabajo.length > 0) {
+            equipoPorOrden.set(h.orden_trabajo, h.equipo_trabajo as string[]); // el más reciente gana
+          }
+        });
+      });
+
+      // ── "Unidad de pago" por orden (solo para el Excel): asignado (si no es Supervisor) + equipo (sin supervisores) ──
+      const unidadPagoPorOrden = new Map<string, string>();
+      ordenesData.forEach((o) => {
+        const partes = new Map<string, string>(); // clave normalizada -> nombre a mostrar
+        const asignado = o.id_tecnico_asignado ? perfilPorId.get(o.id_tecnico_asignado) : undefined;
+        if (asignado && asignado.rol !== 'Supervisor') {
+          partes.set(normalizarNombre(asignado.nombre), nombreBonito(asignado.nombre));
+        }
+        (equipoPorOrden.get(o.orden_trabajo) ?? []).forEach((n) => {
+          const k = normalizarNombre(n);
+          if (!k) return;
+          const p = perfilPorNombre.get(k);
+          if (p) {
+            if (p.rol !== 'Supervisor') partes.set(k, nombreBonito(p.nombre));
+          } else if (miembroPorNombre.has(k)) {
+            partes.set(k, nombreBonito(miembroPorNombre.get(k) as string));
+          } else {
+            partes.set(k, `${nombreBonito(n)} (no registrado)`);
+          }
+        });
+        if (partes.size === 0) {
+          unidadPagoPorOrden.set(
+            o.orden_trabajo,
+            asignado ? `Sin equipo (${nombreBonito(asignado.nombre)})` : 'Sin asignar'
+          );
+          return;
+        }
+        unidadPagoPorOrden.set(
+          o.orden_trabajo,
+          Array.from(partes.values()).sort((a, b) => a.localeCompare(b)).join('-')
+        );
+      });
+
       const ordenesMap = new Map<string, { contrato: string; fecha_cierre: string | null; id_tecnico_asignado: string | null }>();
       ordenesData.forEach((o) => ordenesMap.set(o.orden_trabajo, o));
 
       return items.map((it): FilaItem => {
         const o = ordenesMap.get(it.orden_trabajo);
         return {
-          tecnicoId: o?.id_tecnico_asignado ?? null,
+          tecnicoId: o?.id_tecnico_asignado ?? null, // la pantalla sigue usando el técnico asignado
+          unidadPago: unidadPagoPorOrden.get(it.orden_trabajo) ?? 'Sin asignar', // el Excel usa esto
           ordenTrabajo: it.orden_trabajo,
           contrato: o?.contrato ?? '',
           codigo: it.codigo,
@@ -334,6 +413,7 @@ export default function NominaClient() {
           totalFactura: Number(it.subtotal),
           totalTecnico: Number(it.subtotal), // por ahora igual al valor de factura
           fechaCierre: o?.fecha_cierre ? fechaColombia(o.fecha_cierre) : null,
+          fechaCierreIso: o?.fecha_cierre ?? null,
         };
       });
     },
@@ -421,6 +501,37 @@ export default function NominaClient() {
       actual.totalFactura += f.totalFactura;
       actual.totalTecnico += f.totalTecnico;
       mapa.set(f.tecnico, actual);
+    });
+    return Array.from(mapa.entries())
+      .map(([tecnico, v]) => ({
+        tecnico,
+        contratos: v.contratos.size,
+        items: v.items,
+        totalFactura: v.totalFactura,
+        totalTecnico: v.totalTecnico,
+        participacion: totalEjecutado > 0 ? (v.totalTecnico / totalEjecutado) * 100 : 0,
+      }))
+      .sort((a, b) => b.totalTecnico - a.totalTecnico);
+  }, [filasN, totalEjecutado]);
+
+  // Resumen para el Excel: agrupa por unidad de pago (técnico o equipo). La pantalla sigue usando `resumen`.
+  const resumenPago: ResumenTecnico[] = useMemo(() => {
+    const mapa = new Map<
+      string,
+      { contratos: Set<string>; items: number; totalFactura: number; totalTecnico: number }
+    >();
+    filasN.forEach((f) => {
+      const actual = mapa.get(f.unidadPago) ?? {
+        contratos: new Set<string>(),
+        items: 0,
+        totalFactura: 0,
+        totalTecnico: 0,
+      };
+      actual.contratos.add(f.contrato);
+      actual.items += 1;
+      actual.totalFactura += f.totalFactura;
+      actual.totalTecnico += f.totalTecnico;
+      mapa.set(f.unidadPago, actual);
     });
     return Array.from(mapa.entries())
       .map(([tecnico, v]) => ({
@@ -572,6 +683,15 @@ export default function NominaClient() {
       return new Date(Date.UTC(y, m - 1, d));
     };
 
+    // Fecha + hora tal como se ve en Colombia (UTC-5, sin horario de verano).
+    // Excel no guarda zona horaria, así que se resta 5 h al instante UTC para que la celda muestre la hora local.
+    const aFechaHoraExcel = (iso: string | null) => {
+      if (!iso) return '';
+      const t = new Date(iso).getTime();
+      if (Number.isNaN(t)) return '';
+      return new Date(t - 5 * 60 * 60 * 1000);
+    };
+
     const periodoTexto = `${dmy(applied.start)} al ${dmy(applied.end)}`;
     const tecnicoTexto = applied.tecnicoId
       ? (nombrePorId[applied.tecnicoId] ?? 'Técnico seleccionado')
@@ -590,7 +710,7 @@ export default function NominaClient() {
       estiloEncabezado(c);
     });
 
-    resumen.forEach((r, i) => {
+    resumenPago.forEach((r, i) => {
       const fila = 6 + i;
       [r.tecnico, r.contratos, r.items, r.totalFactura, r.totalTecnico].forEach((v, j) => {
         const c = wsR.getCell(fila, j + 1);
@@ -603,7 +723,7 @@ export default function NominaClient() {
       });
     });
 
-    const filaTotal = 6 + resumen.length;
+    const filaTotal = 6 + resumenPago.length;
     ['TOTAL FINAL', totalContratos, totalItems, totalFacturaGlobal, totalEjecutado].forEach((v, j) => {
       const c = wsR.getCell(filaTotal, j + 1);
       c.value = v;
@@ -614,7 +734,7 @@ export default function NominaClient() {
       if (j >= 3) c.numFmt = FORMATO_MONEDA;
     });
 
-    [24, 14, 12, 18, 18].forEach((w, i) => {
+    [36, 14, 12, 18, 18].forEach((w, i) => {
       wsR.getColumn(i + 1).width = w;
     });
     wsR.views = [{ state: 'frozen', ySplit: 5 }];
@@ -642,7 +762,7 @@ export default function NominaClient() {
     // Ordenado por técnico, luego contrato, luego fecha (así cada contrato queda junto)
     const detalleOrdenado = [...filasN].sort(
       (a, b) =>
-        a.tecnico.localeCompare(b.tecnico) ||
+        a.unidadPago.localeCompare(b.unidadPago) ||
         a.contrato.localeCompare(b.contrato, undefined, { numeric: true }) ||
         (a.fechaCierre ?? '').localeCompare(b.fechaCierre ?? '')
     );
@@ -650,7 +770,7 @@ export default function NominaClient() {
     detalleOrdenado.forEach((f, i) => {
       const fila = 6 + i;
       [
-        f.tecnico,
+        f.unidadPago,
         f.contrato,
         f.codigo,
         f.descripcion,
@@ -658,7 +778,7 @@ export default function NominaClient() {
         f.precioUnitario,
         f.totalFactura,
         f.totalTecnico,
-        aFechaExcel(f.fechaCierre),
+        aFechaHoraExcel(f.fechaCierreIso),
       ].forEach((v, j) => {
         const c = wsD.getCell(fila, j + 1);
         c.value = v;
@@ -667,14 +787,14 @@ export default function NominaClient() {
         if (j === 4) c.alignment = { horizontal: 'center' };
         if (j >= 5 && j <= 7) c.numFmt = FORMATO_MONEDA;
         if (j === 8) {
-          c.numFmt = FORMATO_FECHA;
+          c.numFmt = 'dd/mm/yyyy hh:mm';
           c.alignment = { horizontal: 'center' };
         }
         if (i % 2 === 1) c.fill = zebra;
       });
     });
 
-    [24, 14, 14, 40, 10, 16, 16, 16, 14].forEach((w, i) => {
+    [36, 14, 14, 40, 10, 16, 16, 16, 19].forEach((w, i) => {
       wsD.getColumn(i + 1).width = w;
     });
     wsD.views = [{ state: 'frozen', ySplit: 5 }];

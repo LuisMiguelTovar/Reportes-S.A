@@ -7,6 +7,7 @@ import NotificationsBell from '@/components/NotificationsBell';
 import { supabase } from '@/lib/supabase';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
+import EquipoTrabajoEditor from '@/components/EquipoTrabajoEditor';
 
 interface ItemReporte {
   id: string;
@@ -177,7 +178,7 @@ export default function AuditoriaClient() {
     }
   };
 
-  const fetchHistorialAuditoria = async (ordenTrabajo: string) => {
+  const fetchHistorialAuditoria = useCallback(async (ordenTrabajo: string) => {
     setLoadingHistorialAuditoria(true);
     const { data: historialData, error } = await supabase
       .from('historial_ordenes')
@@ -215,7 +216,7 @@ export default function AuditoriaClient() {
 
     setHistorialAuditoria(enriched);
     setLoadingHistorialAuditoria(false);
-  };
+  }, []);
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -1337,6 +1338,18 @@ export default function AuditoriaClient() {
                     )}
                   </>
                 )}
+              </div>
+            )}
+
+            {/* ── Editor de equipo de trabajo (solo para órdenes Efectiva) ── */}
+            {reporteOrden.estado === 'Efectiva' && (
+              <div className="mb-4">
+                <EquipoTrabajoEditor
+                  ordenTrabajo={reporteOrden.orden_trabajo}
+                  onSaved={() => {
+                    fetchHistorialAuditoria(reporteOrden.orden_trabajo);
+                  }}
+                />
               </div>
             )}
 
