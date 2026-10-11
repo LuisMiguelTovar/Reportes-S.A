@@ -317,6 +317,7 @@ export default function AuditoriaClient() {
     }
 
     query.order('fecha_cierre', { ascending: false, nullsFirst: false });
+    query.order('orden_trabajo', { ascending: false }); // desempate: evita repetir/saltar filas al paginar
 
     return query;
   }, [tecnicos]);
@@ -610,24 +611,48 @@ export default function AuditoriaClient() {
   };
 
   const exportToExcel = async () => {
-    const query = buildFilteredQuery(debouncedSearch, tecnicoFilter, estadoFilter, startDate, endDate, false);
-    const { data: allFiltered, error } = await query;
-    if (error || !allFiltered) {
-      alert('No se pudo generar el reporte.');
-      return;
+    // Supabase limita cada consulta a 1000 filas: se lee por bloques hasta traer todo el filtro.
+    const BLOQUE_ORDENES = 1000;
+    const allFiltered: any[] = [];
+    for (let desde = 0; ; desde += BLOQUE_ORDENES) {
+      const { data: pagina, error } = await buildFilteredQuery(
+        debouncedSearch, tecnicoFilter, estadoFilter, startDate, endDate, false
+      ).range(desde, desde + BLOQUE_ORDENES - 1);
+      if (error || !pagina) {
+        console.error('Error exportando órdenes:', error);
+        alert('No se pudo generar el reporte.');
+        return;
+      }
+      allFiltered.push(...pagina);
+      if (pagina.length < BLOQUE_ORDENES) break;
     }
 
     // Traer el historial de todas las órdenes exportadas para extraer
     // el comentario y el causal de cierre de cada una.
     const ordenTrabajos = allFiltered.map((row: any) => row.orden_trabajo);
-    let historialData: any[] = [];
+    const historialData: any[] = [];
     if (ordenTrabajos.length > 0) {
-      const { data } = await supabase
-        .from('historial_ordenes')
-        .select('orden_trabajo, comentario, causal_codigo, fecha, usuario, fotos')
-        .in('orden_trabajo', ordenTrabajos)
-        .order('fecha', { ascending: false });
-      historialData = data || [];
+      const BLOQUE_HISTORIAL = 100;
+      const trozos: string[][] = [];
+      for (let i = 0; i < ordenTrabajos.length; i += BLOQUE_HISTORIAL) {
+        trozos.push(ordenTrabajos.slice(i, i + BLOQUE_HISTORIAL));
+      }
+      const respuestas = await Promise.all(
+        trozos.map((t) =>
+          supabase
+            .from('historial_ordenes')
+            .select('orden_trabajo, comentario, causal_codigo, fecha, usuario, fotos')
+            .in('orden_trabajo', t)
+            .order('fecha', { ascending: false })
+        )
+      );
+      respuestas.forEach((r) => {
+        if (r.error) {
+          console.error('Error cargando historial para el Excel:', r.error);
+          return;
+        }
+        historialData.push(...(r.data || []));
+      });
     }
 
     // JOIN manual con perfiles para obtener el nombre del autor (usuario = email)
