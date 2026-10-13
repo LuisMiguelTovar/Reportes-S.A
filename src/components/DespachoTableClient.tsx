@@ -6,6 +6,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import UploadExcelButton from '@/components/UploadExcelButton';
 import UserProfile from '@/components/UserProfile';
 import NotificationsBell from '@/components/NotificationsBell';
+import { useArea } from '@/components/AreaProvider';
 
 interface ItemReporte {
   id: string;
@@ -194,6 +195,7 @@ function ExcelColumnFilter({
 
 export default function DespachoTableClient() {
   const { user } = useAuth();
+  const { area } = useArea();
 
   const [ordenes, setOrdenes] = useState<Orden[]>([]);
   const [loadingOrdenes, setLoadingOrdenes] = useState(true);
@@ -333,7 +335,8 @@ export default function DespachoTableClient() {
     const query = supabase
       .from('ordenes')
       .select('*', withCount ? { count: 'exact' } : undefined)
-      .not('estado', 'in', '("Efectiva","Cancelada")');
+      .not('estado', 'in', '("Efectiva","Cancelada")')
+      .eq('area', area);
 
     // Búsqueda
     if (search) {
@@ -459,7 +462,7 @@ export default function DespachoTableClient() {
     query.order('fecha_asignacion_ot', { ascending: true });
 
     return query;
-  }, []);
+  }, [area]);
 
   // ── Fetch órdenes — paginado server-side ──
   const fetchOrdenes = useCallback(async () => {
@@ -502,6 +505,7 @@ export default function DespachoTableClient() {
       .from('ordenes')
       .select('orden_trabajo, contrato, localidad, descripcion_del_trabajo, fecha_asignacion_ot, fecha_programada')
       .not('estado', 'in', '("Efectiva","Cancelada")')
+      .eq('area', area)
       .returns<FilaFiltroOpciones[]>();
 
     if (!data) return;
@@ -541,7 +545,7 @@ export default function DespachoTableClient() {
     setSlaDiasUnicos(dias);
     setFechasProgUnicas(fechas);
     setFechasAsigUnicas(fechasAsig);
-  }, []);
+  }, [area]);
 
   // Lee la fecha de la última carga de Excel desde la tabla app_metadata.
   const fetchLastUploadDate = useCallback(async () => {
@@ -635,6 +639,7 @@ export default function DespachoTableClient() {
         .from('perfiles')
         .select('id_usuario, nombre')
         .in('rol', ['Técnico', 'Supervisor'])
+        .contains('areas', [area])
         .order('nombre', { ascending: true });
 
       if (!error && data) {
@@ -642,7 +647,7 @@ export default function DespachoTableClient() {
       }
     };
     fetchTecnicos();
-  }, []);
+  }, [area]);
 
   // ── Fetch historial de la orden (con JOIN manual a perfiles) ──
   const fetchHistorial = useCallback(async (ordenTrabajo: string) => {

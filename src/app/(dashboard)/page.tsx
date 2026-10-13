@@ -1,3 +1,4 @@
+import { cookies } from 'next/headers';
 import { supabase } from '@/lib/supabase';
 import DashboardClient from '@/components/DashboardClient';
 
@@ -24,21 +25,24 @@ export default async function DashboardPage() {
   const inicioHoy = `${dateObj.year}-${dateObj.month}-${dateObj.day}T00:00:00-05:00`;
   const finHoy = `${dateObj.year}-${dateObj.month}-${dateObj.day}T23:59:59-05:00`;
 
+  const areaActiva = (await cookies()).get('hlgas_area')?.value === 'RI' ? 'RI' : 'SA';
+
   // Las consultas son independientes entre sí: se lanzan en paralelo.
   const [activasRes, cerradasRes, perfilesRes, creadasRes, capacidadRes, localidadesRes] = await Promise.all([
     // Órdenes activas (todo lo que no está cerrado)
     supabase
       .from('ordenes')
-      .select('orden_trabajo, estado, localidad, barrio, descripcion_del_trabajo, id_tecnico_asignado, contrato, fecha_asignacion_ot')
-      .not('estado', 'in', '("Efectiva","Cancelada")'),
-
+      .select('orden_trabajo, estado, localidad, barrio, descripcion_del_trabajo, id_tecnico_asignado, contrato, fecha_asignacion_ot, plan_comercial')
+      .not('estado', 'in', '("Efectiva","Cancelada")')
+      .eq('area', areaActiva),
     // Órdenes cerradas hoy (filas, no solo el conteo: se usan para efectivas/incumplidas y para el flujo por hora)
     supabase
       .from('ordenes')
       .select('orden_trabajo, estado, fecha_cierre')
       .in('estado', ['Efectiva', 'Cancelada'])
       .gte('fecha_cierre', inicioHoy)
-      .lte('fecha_cierre', finHoy),
+      .lte('fecha_cierre', finHoy)
+      .eq('area', areaActiva),
 
     // Técnicos y supervisores (a ambos se les pueden asignar órdenes desde Despacho)
     supabase.from('perfiles').select('id_usuario, nombre').in('rol', ['Técnico', 'Supervisor']),
@@ -49,7 +53,8 @@ export default async function DashboardPage() {
       .from('ordenes')
       .select('orden_trabajo, creado_en')
       .gte('creado_en', inicioHoy)
-      .lte('creado_en', finHoy),
+      .lte('creado_en', finHoy)
+      .eq('area', areaActiva),
 
     // Capacidad operativa por técnico (configurable desde el dashboard)
     supabase.from('app_metadata').select('valor').eq('clave', 'capacidad_tecnico').maybeSingle(),
@@ -72,6 +77,7 @@ export default async function DashboardPage() {
       capacidadInicial={capacidadInicial}
       localidadesConocidas={(localidadesRes.data ?? []).map((r: { localidad: string | null }) => r.localidad ?? '')}
       hayError={Boolean(activasRes.error || cerradasRes.error || perfilesRes.error)}
+      areaDatos={areaActiva}
     />
   );
 }

@@ -1,7 +1,9 @@
 'use client';
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useRouter } from 'next/navigation';
 import { saveAs } from 'file-saver';
+import { useArea } from '@/components/AreaProvider';
 import type { Cell, Worksheet } from 'exceljs';
 import {
   LineChart,
@@ -232,6 +234,15 @@ function TooltipDia({
 // ───────────────────────── Componente principal ─────────────────────────
 
 export default function NominaClient() {
+  const router = useRouter();
+  const { area } = useArea();
+
+  useEffect(() => {
+    if (area !== 'SA') {
+      router.replace('/');
+    }
+  }, [area, router]);
+
   // Filtros en edición (se aplican al pulsar "Aplicar")
   const [draftStart, setDraftStart] = useState('');
   const [draftEnd, setDraftEnd] = useState('');
@@ -299,6 +310,7 @@ export default function NominaClient() {
         .from('ordenes')
         .select('orden_trabajo, contrato, fecha_cierre, id_tecnico_asignado')
         .eq('estado', 'Efectiva')
+        .eq('area', 'SA')
         .gte('fecha_cierre', `${start}T00:00:00-05:00`)
         .lte('fecha_cierre', `${end}T23:59:59.999-05:00`);
       if (tecnicoId) query = query.eq('id_tecnico_asignado', tecnicoId);

@@ -7,3 +7,10 @@
 body {
   background-color: #f9fafb;
 }
+
+/* Escala general de la interfaz: ~90% del tamaño por defecto.
+   Para ajustar el tamaño de TODO el panel cambia solo este porcentaje
+   (por ejemplo 85% más pequeño, 95% casi normal, 100% sin escala). */
+html {
+  font-size: 90%;
+}

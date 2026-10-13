@@ -2,8 +2,10 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
+import { useArea } from '@/components/AreaProvider';
 
 export default function NotificationsBell() {
+  const { area } = useArea();
   const [unreadCount, setUnreadCount] = useState(0);
   const [notificaciones, setNotificaciones] = useState<string[]>([]);
   const [showNotifications, setShowNotifications] = useState(false);
@@ -12,6 +14,7 @@ export default function NotificationsBell() {
   useEffect(() => {
     const channel = supabase.channel('realtime-ordenes-bell')
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'ordenes' }, async (payload) => {
+        if (payload.new?.area && payload.new.area !== area) return;
         if (payload.new.estado !== payload.old.estado && (payload.new.estado === 'Efectiva' || payload.new.estado === 'Cancelada')) {
           let nombreTecnico = 'Un técnico';
           if (payload.new.id_tecnico_asignado) {
@@ -35,7 +38,7 @@ export default function NotificationsBell() {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, []);
+  }, [area]);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {

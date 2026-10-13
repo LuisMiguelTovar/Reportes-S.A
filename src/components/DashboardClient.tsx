@@ -5,6 +5,8 @@ import { supabase } from '@/lib/supabase';
 import UserProfile from '@/components/UserProfile';
 import NotificationsBell from '@/components/NotificationsBell';
 import { toast } from 'react-hot-toast';
+import { useArea } from '@/components/AreaProvider';
+import { useRouter } from 'next/navigation';
 
 // ───────────────────────── Reglas ajustables ─────────────────────────
 // Cambia estos valores para afinar cómo se clasifican las cosas, sin tocar el resto.
@@ -32,13 +34,14 @@ type OrdenActiva = {
   id_tecnico_asignado?: string | null;
   contrato?: string | null;
   fecha_asignacion_ot?: string | null;
+  plan_comercial?: string | null;
 };
 
 type OrdenCerrada = { orden_trabajo: string; estado: string; fecha_cierre: string | null };
 type OrdenCreada = { orden_trabajo: string; creado_en: string | null };
 type Perfil = { id_usuario: string; nombre: string };
 
-type FilaRealtime = OrdenActiva & { fecha_cierre?: string | null; creado_en?: string | null };
+type FilaRealtime = OrdenActiva & { fecha_cierre?: string | null; creado_en?: string | null; area?: string | null };
 
 type Tono = 'red' | 'green' | 'amber' | 'blue' | 'slate';
 
@@ -79,6 +82,32 @@ const clasificarTrabajo = (desc?: string | null): CategoriaKey => {
   }
   if (t.includes('REPARAC')) return 'reparacion';
   return 'otros';
+};
+
+// ───────────────────────── Redes internas: categorización por plan comercial ─────────────────────────
+
+const PLANES_RI: Record<string, string> = {
+  '151': 'Cargo por conexión comercial',
+  '157': 'Solo CXC de CSV sin cert.',
+  '208': 'Cargo por conexión GDO con cert.',
+  '209': 'Venta con diseño especial con cert.',
+  '210': 'Red completa + obsequio 1 pto con cert.',
+  '256': 'Red completa venta remota con cert.',
+};
+
+const COLORES_CICLO = ['#2563EB', '#7C3AED', '#D97706', '#15803D', '#DC2626', '#8892A6', '#0891B2', '#C026D3', '#65A30D', '#EA580C'];
+
+const categoriaPlanRI = (plan?: string | null): { clave: string; nombre: string } => {
+  const raw = (plan || '').trim();
+  if (!raw) return { clave: 'SIN', nombre: 'Sin plan comercial' };
+  const m = raw.match(/^\s*(\d+)/);
+  const codigo = m ? m[1] : null;
+  if (codigo && PLANES_RI[codigo]) return { clave: codigo, nombre: `${codigo} · ${PLANES_RI[codigo]}` };
+  // Plan nuevo: mostrar con su propio texto sin repetir el código
+  const sinCodigo = raw.replace(/^\s*\d+\s*-\s*(\d+\s*-\s*)?/, '').trim() || raw;
+  return codigo
+    ? { clave: codigo, nombre: `${codigo} · ${sinCodigo}` }
+    : { clave: raw.toUpperCase(), nombre: raw };
 };
 
 // ───────────────────────── Helpers ─────────────────────────
@@ -271,6 +300,7 @@ export default function DashboardClient({
   capacidadInicial,
   localidadesConocidas,
   hayError,
+  areaDatos,
 }: {
   ordenesActivas: OrdenActiva[];
   cerradasHoy: OrdenCerrada[];
@@ -279,7 +309,27 @@ export default function DashboardClient({
   capacidadInicial: number;
   localidadesConocidas: string[]; // todas las localidades que han aparecido en el sistema (aunque hoy no tengan órdenes)
   hayError: boolean;
+  areaDatos: 'SA' | 'RI'; // área con la que el servidor armó estos datos
 }) {
+  const { area: areaContexto } = useArea();
+  // La agrupación (tipo de trabajo, antigüedad, tiempo real) se decide por el área de los DATOS
+  // que llegaron, para que SA y RI nunca se mezclen (p. ej. justo al cambiar de área).
+  const area = areaDatos;
+  const router = useRouter();
+  const sincronizando = useRef(false);
+
+  // Si el área elegida en pantalla no coincide con la de los datos (cookie vieja),
+  // se alinea la cookie y se recarga UNA sola vez (sin bucles).
+  useEffect(() => {
+    if (areaContexto === areaDatos) {
+      sincronizando.current = false;
+      return;
+    }
+    if (sincronizando.current) return;
+    sincronizando.current = true;
+    document.cookie = `hlgas_area=${areaContexto}; path=/; max-age=31536000; samesite=lax`;
+    router.refresh();
+  }, [areaContexto, areaDatos, router]);
   const [activas, setActivas] = useState<OrdenActiva[]>(ordenesActivas);
   const [cerradasHoy, setCerradasHoy] = useState<OrdenCerrada[]>(cerradasIniciales);
   const [creadasHoy, setCreadasHoy] = useState<OrdenCreada[] | null>(creadasIniciales);
@@ -338,6 +388,7 @@ export default function DashboardClient({
       .channel('realtime_ordenes')
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'ordenes' }, (payload) => {
         const nueva = payload.new as FilaRealtime;
+        if (nueva.area && nueva.area !== area) return;
         const esCerrada = nueva.estado === 'Efectiva' || nueva.estado === 'Cancelada';
         const estabaActiva = activasRef.current.some((o) => o.orden_trabajo === nueva.orden_trabajo);
 
@@ -372,6 +423,7 @@ export default function DashboardClient({
       })
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'ordenes' }, (payload) => {
         const nueva = payload.new as FilaRealtime;
+        if (nueva.area && nueva.area !== area) return;
         const esCerrada = nueva.estado === 'Efectiva' || nueva.estado === 'Cancelada';
         if (!esCerrada) {
           setActivas((prev) => (prev.some((o) => o.orden_trabajo === nueva.orden_trabajo) ? prev : [nueva, ...prev]));
@@ -388,7 +440,7 @@ export default function DashboardClient({
     return () => {
       supabase.removeChannel(channel);
     };
-  }, []);
+  }, [area]);
 
   // ───────────────── Datos derivados ─────────────────
 
@@ -487,6 +539,8 @@ export default function DashboardClient({
   const maxLocalidad = Math.max(porLocalidad[0]?.total ?? 0, 1);
 
   // Por tipo de trabajo
+  // — SA: agrupa por descripcion_del_trabajo (lógica original)
+  // — RI: agrupa por plan_comercial
   const porCategoria = useMemo(() => {
     const m: Record<CategoriaKey, number> = {
       emergencia: 0,
@@ -497,15 +551,31 @@ export default function DashboardClient({
       cotizacion: 0,
       otros: 0,
     };
-    activasN.forEach((o) => {
-      m[o.categoria] += 1;
-    });
+    if (area !== 'RI') {
+      activasN.forEach((o) => { m[o.categoria] += 1; });
+    }
     return m;
-  }, [activasN]);
+  }, [activasN, area]);
+
+  // RI: distribución por plan comercial (mapa clave → cantidad)
+  const porPlanRI = useMemo(() => {
+    if (area !== 'RI') return [] as { clave: string; nombre: string; total: number; color: string }[];
+    const m = new Map<string, { nombre: string; total: number }>();
+    activas.forEach((o) => {
+      const { clave, nombre } = categoriaPlanRI((o as OrdenActiva).plan_comercial);
+      const actual = m.get(clave);
+      if (actual) actual.total += 1;
+      else m.set(clave, { nombre, total: 1 });
+    });
+    return Array.from(m.entries())
+      .map(([clave, { nombre, total }], idx) => ({ clave, nombre, total, color: COLORES_CICLO[idx % COLORES_CICLO.length] }))
+      .sort((a, b) => b.total - a.total);
+  }, [activas, area]);
+
   const prioritarias = porCategoria.emergencia + porCategoria.defecto_critico;
   const pctPrioritarias = total > 0 ? (prioritarias / total) * 100 : 0;
   const categoriasVisibles = useMemo(() => CATEGORIAS.filter((c) => porCategoria[c.key] > 0), [porCategoria]);
-  const maxCategoria = Math.max(...categoriasVisibles.map((c) => porCategoria[c.key]), 1);
+  const maxCategoria = Math.max(...(area === 'RI' ? porPlanRI.map((p) => p.total) : categoriasVisibles.map((c) => porCategoria[c.key])), 1);
 
   // Por barrio (top 5 + otros)
   const BARRIO_COLORES = ['#2563EB', '#3B82F6', '#60A5FA', '#93C5FD', '#BFDBFE', '#E2E8F0'];
@@ -529,8 +599,17 @@ export default function DashboardClient({
   }, [activasN]);
 
   // Antigüedad
+  // — SA: 0–1 día / 2 días / 3 días o más
+  // — RI: 1–3 días (verde) / 4–6 días (naranja) / 7 días o más (rojo)
   const antiguedad = useMemo(() => {
-    const filas = [
+    if (area === 'RI') {
+      return [
+        { key: 'verde',   label: '0–3 días',      color: '#15803D', track: '#DCFCE7', total: activasN.filter((o) => o.dias <= 3).length },
+        { key: 'naranja', label: '4–6 días',       color: '#D97706', track: '#FEF3C7', total: activasN.filter((o) => o.dias >= 4 && o.dias <= 6).length },
+        { key: 'rojo',    label: '7 días o más',   color: '#DC2626', track: '#FEE2E2', total: activasN.filter((o) => o.dias >= 7).length },
+      ];
+    }
+    return [
       { key: 'reciente', label: '0–1 día', color: '#15803D', track: '#DCFCE7', total: activasN.filter((o) => o.dias <= 1).length },
       {
         key: 'media',
@@ -547,8 +626,7 @@ export default function DashboardClient({
         total: activasN.filter((o) => o.dias >= DIAS_VENCIDA).length,
       },
     ];
-    return filas;
-  }, [activasN]);
+  }, [activasN, area]);
   const maxAntiguedad = Math.max(...antiguedad.map((a) => a.total), 1);
 
   // Flujo del día
@@ -762,8 +840,10 @@ export default function DashboardClient({
         />
       </div>
 
-      {/* Fila 1: Carga por técnico | Localidad + Barrio apilados (así no queda hueco) */}
+      {/* Fila 1: dos columnas que se apilan solas (sin hueco) */}
       <div className="grid grid-cols-1 xl:grid-cols-[1.6fr_1fr] gap-5 items-start">
+        {/* Columna izquierda: Carga por técnico + Distribución por tipo de trabajo */}
+        <div className="space-y-5">
         <Panel
           titulo="Carga por técnico"
           subtitulo={
@@ -855,6 +935,72 @@ export default function DashboardClient({
           )}
         </Panel>
 
+        <Panel
+          titulo="Distribución por tipo de trabajo"
+          subtitulo={`Composición de las ${total} órdenes activas`}
+          badge={
+            area !== 'RI' && pctPrioritarias > 0 ? <Pill tono="red">{pct(pctPrioritarias)} requiere atención prioritaria</Pill> : undefined
+          }
+        >
+          <div className="space-y-3.5">
+            {area === 'RI' ? (
+              porPlanRI.length === 0 ? (
+                <p className="text-sm text-slate-400">No hay órdenes activas.</p>
+              ) : (
+                porPlanRI.map((p) => (
+                  <div key={p.clave} className="grid grid-cols-[1fr_auto_40px_50px] gap-x-4 items-center">
+                    <span className="inline-flex items-center gap-2 text-sm text-slate-700 min-w-0">
+                      <span className="w-2 h-2 rounded-full shrink-0" style={{ background: p.color }} />
+                      <span className="truncate" title={p.nombre}>{p.nombre}</span>
+                    </span>
+                    <div className="h-2 rounded-full bg-slate-100 overflow-hidden w-24">
+                      <div
+                        className="h-full rounded-full transition-all duration-500"
+                        style={{ width: `${(p.total / maxCategoria) * 100}%`, background: p.color }}
+                      />
+                    </div>
+                    <span className="text-sm font-bold text-slate-900 text-right">{p.total}</span>
+                    <span className="text-xs text-slate-400 text-right">{pct(total > 0 ? (p.total / total) * 100 : 0)}</span>
+                  </div>
+                ))
+              )
+            ) : (
+              categoriasVisibles.length === 0 ? (
+                <p className="text-sm text-slate-400">No hay órdenes activas.</p>
+              ) : (
+                categoriasVisibles.map((c) => {
+                  const n = porCategoria[c.key];
+                  return (
+                    <div key={c.key} className="grid grid-cols-[170px_1fr_40px_50px] gap-x-4 items-center">
+                      <span className="inline-flex items-center gap-2 text-sm text-slate-700">
+                        <span className="w-2 h-2 rounded-full shrink-0" style={{ background: c.color }} />
+                        {c.label}
+                      </span>
+                      <div className="h-2 rounded-full bg-slate-100 overflow-hidden">
+                        <div
+                          className="h-full rounded-full transition-all duration-500"
+                          style={{ width: `${(n / maxCategoria) * 100}%`, background: c.color }}
+                        />
+                      </div>
+                      <span className="text-sm font-bold text-slate-900 text-right">{n}</span>
+                      <span className="text-xs text-slate-400 text-right">{pct(total > 0 ? (n / total) * 100 : 0)}</span>
+                    </div>
+                  );
+                })
+              )
+            )}
+          </div>
+          {area === 'RI' ? (
+            <p className="mt-4 text-xs text-slate-400">Agrupado por plan comercial.</p>
+          ) : porCategoria.otros > 0 ? (
+            <p className="mt-4 text-xs text-slate-400">
+              &quot;Otros&quot; agrupa trabajos cuyo nombre no coincide con las categorías anteriores.
+            </p>
+          ) : null}
+        </Panel>
+        </div>
+
+        {/* Columna derecha: Órdenes por localidad + Distribución por barrio + Antigüedad */}
         <div className="space-y-5">
           <Panel titulo="Órdenes por localidad" subtitulo={`${total} órdenes activas · de mayor a menor`}>
             <div className="space-y-4">
@@ -974,86 +1120,45 @@ export default function DashboardClient({
               </>
             )}
           </Panel>
+
+          <Panel titulo="Antigüedad de órdenes" subtitulo={`Tiempo abierto de las ${total} órdenes activas`}>
+            <div className="space-y-4">
+              {antiguedad.map((a) => (
+                <div key={a.key}>
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="inline-flex items-center gap-2 font-medium text-slate-800">
+                      <span className="w-2 h-2 rounded-full" style={{ background: a.color }} />
+                      {a.label}
+                    </span>
+                    <span>
+                      <strong className="text-slate-900">{a.total}</strong>{' '}
+                      <span className="text-xs text-slate-400">{pct(total > 0 ? (a.total / total) * 100 : 0)} del total</span>
+                    </span>
+                  </div>
+                  <div className="mt-1.5 h-2 rounded-full overflow-hidden" style={{ background: a.track }}>
+                    <div
+                      className="h-full rounded-full transition-all duration-500"
+                      style={{ width: `${(a.total / maxAntiguedad) * 100}%`, background: a.color }}
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="mt-5">
+              {vencidas > 0 ? (
+                <Insight tono="red">
+                  {pct(pctVencidas)} de las órdenes activas lleva {DIAS_VENCIDA} días o más.
+                </Insight>
+              ) : (
+                <Insight tono="green">Ninguna orden activa supera los {DIAS_VENCIDA - 1} días.</Insight>
+              )}
+            </div>
+          </Panel>
         </div>
       </div>
 
-      {/* Fila 2: Tipo de trabajo + Antigüedad */}
-      <div className="grid grid-cols-1 xl:grid-cols-[1.6fr_1fr] gap-5 items-start">
-        <Panel
-          titulo="Distribución por tipo de trabajo"
-          subtitulo={`Composición de las ${total} órdenes activas`}
-          badge={
-            pctPrioritarias > 0 ? <Pill tono="red">{pct(pctPrioritarias)} requiere atención prioritaria</Pill> : undefined
-          }
-        >
-          <div className="space-y-3.5">
-            {categoriasVisibles.length === 0 ? (
-              <p className="text-sm text-slate-400">No hay órdenes activas.</p>
-            ) : (
-              categoriasVisibles.map((c) => {
-                const n = porCategoria[c.key];
-                return (
-                  <div key={c.key} className="grid grid-cols-[170px_1fr_40px_50px] gap-x-4 items-center">
-                    <span className="inline-flex items-center gap-2 text-sm text-slate-700">
-                      <span className="w-2 h-2 rounded-full shrink-0" style={{ background: c.color }} />
-                      {c.label}
-                    </span>
-                    <div className="h-2 rounded-full bg-slate-100 overflow-hidden">
-                      <div
-                        className="h-full rounded-full transition-all duration-500"
-                        style={{ width: `${(n / maxCategoria) * 100}%`, background: c.color }}
-                      />
-                    </div>
-                    <span className="text-sm font-bold text-slate-900 text-right">{n}</span>
-                    <span className="text-xs text-slate-400 text-right">{pct(total > 0 ? (n / total) * 100 : 0)}</span>
-                  </div>
-                );
-              })
-            )}
-          </div>
-          {porCategoria.otros > 0 && (
-            <p className="mt-4 text-xs text-slate-400">
-              &quot;Otros&quot; agrupa trabajos cuyo nombre no coincide con las categorías anteriores.
-            </p>
-          )}
-        </Panel>
-
-        <Panel titulo="Antigüedad de órdenes" subtitulo={`Tiempo abierto de las ${total} órdenes activas`}>
-          <div className="space-y-4">
-            {antiguedad.map((a) => (
-              <div key={a.key}>
-                <div className="flex items-center justify-between text-sm">
-                  <span className="inline-flex items-center gap-2 font-medium text-slate-800">
-                    <span className="w-2 h-2 rounded-full" style={{ background: a.color }} />
-                    {a.label}
-                  </span>
-                  <span>
-                    <strong className="text-slate-900">{a.total}</strong>{' '}
-                    <span className="text-xs text-slate-400">{pct(total > 0 ? (a.total / total) * 100 : 0)} del total</span>
-                  </span>
-                </div>
-                <div className="mt-1.5 h-2 rounded-full overflow-hidden" style={{ background: a.track }}>
-                  <div
-                    className="h-full rounded-full transition-all duration-500"
-                    style={{ width: `${(a.total / maxAntiguedad) * 100}%`, background: a.color }}
-                  />
-                </div>
-              </div>
-            ))}
-          </div>
-          <div className="mt-5">
-            {vencidas > 0 ? (
-              <Insight tono="red">
-                {pct(pctVencidas)} de las órdenes activas lleva {DIAS_VENCIDA} días o más.
-              </Insight>
-            ) : (
-              <Insight tono="green">Ninguna orden activa supera los {DIAS_VENCIDA - 1} días.</Insight>
-            )}
-          </div>
-        </Panel>
-      </div>
-
-      {/* Fila 3: Flujo del día */}
+      {/* Fila 3: Flujo del día (solo SA) */}
+      {area !== 'RI' && (
       <Panel
         titulo="Flujo del día"
         subtitulo={
@@ -1132,8 +1237,10 @@ export default function DashboardClient({
           </p>
         )}
       </Panel>
+      )}
 
-      {/* Mapa de calor */}
+      {/* Mapa de calor (solo SA) */}
+      {area !== 'RI' && (
       <Panel
         titulo="Mapa de calor operativo"
         subtitulo="Concentración de órdenes por localidad y tipo de trabajo"
@@ -1192,6 +1299,7 @@ export default function DashboardClient({
           </>
         )}
       </Panel>
+      )}
     </div>
   );
 }

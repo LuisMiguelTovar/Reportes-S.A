@@ -4,6 +4,7 @@ import { useRouter } from 'next/navigation';
 import * as XLSX from 'xlsx';
 import toast from 'react-hot-toast';
 import { supabase } from '@/lib/supabase';
+import { useArea } from '@/components/AreaProvider';
 
 // Helper to handle Excel dates
 const parseExcelDate = (excelDate: string | number | undefined | null) => {
@@ -64,7 +65,7 @@ const splitHtmlPages = (html: string): string[] => {
   // contienen datos de una orden real (ej. el sobrante después del
   // último marcador, que queda casi vacío).
   const parts = html.split(/<H1[^>]*class\s*=\s*["']?SaltoDePagina["']?[^>]*>/i);
-  return parts.filter(p => p.trim().length > 0 && p.includes('Número de la Orden'));
+  return parts.filter(p => p.trim().length > 0 && normalizarTexto(decodeHtmlEntities(p)).includes('numero de la orden'));
 };
 
 /**
@@ -141,6 +142,17 @@ const parseFechaHtml = (raw: string): string | null => {
   return isNaN(fallback.getTime()) ? null : fallback.toISOString();
 };
 
+/** Compara nombres de columna ignorando tildes, mayúsculas, espacios y guiones bajos
+ * ("PLAN_COMERCIAL" = "Plan Comercial", "DESCRIPCIÓN CATEGORIA" = "descripcion categoria"). */
+const normalizarClave = (s: string): string =>
+  normalizarTexto(s).replace(/[^a-z0-9]/g, '');
+
+const leerColumna = (row: Record<string, string | number>, ...nombres: string[]): string | number => {
+  const objetivos = nombres.map(normalizarClave);
+  const key = Object.keys(row).find(k => objetivos.includes(normalizarClave(k)));
+  return key !== undefined ? row[key] : '';
+};
+
 const mapHtmlFieldsToOrden = (fields: Record<string, string>) => {
   const keys = Object.keys(fields);
   const buscar = (...condiciones: ((k: string) => boolean)[]) => {
@@ -204,6 +216,15 @@ const mapHtmlFieldsToOrden = (fields: Record<string, string>) => {
   const medidorKey = buscar(k => normalizarTexto(k).includes('medidor') && !normalizarTexto(k).includes('marca') && !normalizarTexto(k).includes('retirado') && !normalizarTexto(k).includes('instalado'));
   const numeroMedidor = medidorKey ? fields[medidorKey].trim() : '';
 
+  // Unidad Operativa (ej. "5218-HLGAS SERV ASOC", "5213 - HLGAS CONEX COM").
+  // Se guarda el texto tal cual; un trigger en la base de datos calcula el área.
+  const unidadKey = buscar(k => normalizarTexto(k).includes('unidad') && normalizarTexto(k).includes('operativa'));
+  const unidadOperativa = unidadKey ? fields[unidadKey].trim() : '';
+
+  // Plan comercial: viene como "//PLAN COMERCIAL CONSTRUCTORA"; se guarda sin las barras.
+  const planKey = buscar(k => normalizarTexto(k).includes('plan com'));
+  const planComercial = planKey ? (fields[planKey].split('//').pop() || '').trim() : '';
+
   return {
     orden_trabajo: ordenTrabajo,
     contrato,
@@ -217,6 +238,8 @@ const mapHtmlFieldsToOrden = (fields: Record<string, string>) => {
     id_tecnico_asignado: null,    // HTML nunca trae técnico
     nombre_usuario: nombreUsuario,
     numero_medidor: numeroMedidor,
+    unidad_operativa: unidadOperativa || null,
+    plan_comercial: planComercial || null,
   };
 };
 
@@ -228,6 +251,7 @@ interface UploadExcelButtonProps {
 
 export default function UploadExcelButton({ onUploadSuccess }: UploadExcelButtonProps = {}) {
   const [loading, setLoading] = useState(false);
+  const { area: areaArchivo } = useArea();
   const inputRef = useRef<HTMLInputElement>(null);
   const router = useRouter();
 
@@ -288,6 +312,7 @@ export default function UploadExcelButton({ onUploadSuccess }: UploadExcelButton
         );
 
         let insertadasCount = 0;
+        let otraAreaCount = 0;
         if (nuevasOrdenes.length > 0) {
           const { error: insertError } = await supabase
             .from('ordenes')
@@ -295,10 +320,26 @@ export default function UploadExcelButton({ onUploadSuccess }: UploadExcelButton
 
           if (insertError) throw insertError;
           insertadasCount = nuevasOrdenes.length;
+
+          const nuevasIds = nuevasOrdenes.map(o => String(o.orden_trabajo));
+          for (let i = 0; i < nuevasIds.length; i += 200) {
+            const chunk = nuevasIds.slice(i, i + 200);
+            const { data: verifData } = await supabase
+              .from('ordenes')
+              .select('orden_trabajo, area')
+              .in('orden_trabajo', chunk);
+
+            if (verifData) {
+              otraAreaCount += verifData.filter(o => o.area !== areaArchivo).length;
+            }
+          }
         }
 
         const protegidasCount = formattedData.length - insertadasCount;
-        const message = `HTML: ${insertadasCount} nuevas insertadas, ${protegidasCount} ya existían (protegidas).`;
+        let message = `HTML: ${insertadasCount} nuevas insertadas, ${protegidasCount} ya existían (protegidas).`;
+        if (otraAreaCount > 0) {
+          message += ` · ${otraAreaCount} de otra área (cambia de área en el menú para verlas)`;
+        }
         toast.success(message, { id: 'excel-upload' });
 
       } else {
@@ -313,6 +354,65 @@ export default function UploadExcelButton({ onUploadSuccess }: UploadExcelButton
         // Validar que hay datos
         if (jsonData.length === 0) {
           throw new Error('El archivo Excel está vacío.');
+        }
+
+        // ─── Excel de REDES INTERNAS: solo inserta órdenes nuevas (no reasigna ni modifica existentes) ───
+        if (areaArchivo === 'RI') {
+          const porOrden = new Map<string, Record<string, unknown>>();
+          for (const row of jsonData) {
+            const ordenTrabajo = String(leerColumna(row, 'ORDEN TRABAJO') || '').trim();
+            if (!ordenTrabajo) continue;
+            porOrden.set(ordenTrabajo, {
+              orden_trabajo: ordenTrabajo,
+              contrato: String(leerColumna(row, 'CONTRATO') || '').trim(),
+              direccion: String(leerColumna(row, 'DIRECCION') || '').trim(),
+              barrio: String(leerColumna(row, 'BARRIO') || '').trim(),
+              localidad: normalizeLocalidad(String(leerColumna(row, 'LOCALIDAD') || '')),
+              descripcion_del_trabajo: String(leerColumna(row, 'DESCRIPCION CATEGORIA') || '').trim(),
+              plan_comercial: String(leerColumna(row, 'PLAN_COMERCIAL') || '').trim() || null,
+              fecha_asignacion_ot: parseExcelDate(leerColumna(row, 'FECHA_ASIGNACION_OT', 'FECHA ASIGNACION')),
+              observacion_solicitud: String(leerColumna(row, 'OBSERVACION_SOLICITUD', 'OBSERVACION SOLICITUD') || '').trim(),
+              estado: 'Pendiente',
+              id_tecnico_asignado: null,
+              nombre_usuario: String(leerColumna(row, 'NOMBRE_USUARIO') || '').trim(),
+              numero_medidor: '',
+              area: 'RI',
+            });
+          }
+
+          const filasRI = Array.from(porOrden.values());
+          if (filasRI.length === 0) {
+            throw new Error('No se encontraron órdenes válidas en el Excel de Redes internas (columna ORDEN TRABAJO).');
+          }
+
+          // Qué órdenes ya existen (en bloques para no exceder el largo de la URL)
+          const idsRI = filasRI.map(o => String(o.orden_trabajo));
+          const existentesRI = new Set<string>();
+          for (let i = 0; i < idsRI.length; i += 200) {
+            const { data: existentes, error: errExist } = await supabase
+              .from('ordenes')
+              .select('orden_trabajo')
+              .in('orden_trabajo', idsRI.slice(i, i + 200));
+            if (errExist) throw errExist;
+            (existentes || []).forEach(o => existentesRI.add(String(o.orden_trabajo)));
+          }
+
+          const nuevasRI = filasRI.filter(o => !existentesRI.has(String(o.orden_trabajo)));
+          for (let i = 0; i < nuevasRI.length; i += 200) {
+            const { error: errIns } = await supabase.from('ordenes').insert(nuevasRI.slice(i, i + 200));
+            if (errIns) throw errIns;
+          }
+
+          toast.success(
+            `Redes internas: ${nuevasRI.length} nuevas insertadas, ${filasRI.length - nuevasRI.length} ya existían (protegidas).`,
+            { id: 'excel-upload' }
+          );
+          if (onUploadSuccess) {
+            onUploadSuccess();
+          } else {
+            router.refresh();
+          }
+          return;
         }
 
         // FETCH DE PERFILES
@@ -350,6 +450,7 @@ export default function UploadExcelButton({ onUploadSuccess }: UploadExcelButton
               id_tecnico_asignado: assignedId,
               nombre_usuario: '',
               numero_medidor: '',
+              unidad_operativa: String(row['UNIDAD OPERATIVA'] || row['UNIDAD_OPERATIVA'] || '').trim() || null,
             };
           });
 

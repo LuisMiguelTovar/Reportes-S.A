@@ -8,6 +8,7 @@ import { supabase } from '@/lib/supabase';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
 import EquipoTrabajoEditor from '@/components/EquipoTrabajoEditor';
+import { useArea } from '@/components/AreaProvider';
 
 interface ItemReporte {
   id: string;
@@ -60,6 +61,7 @@ const causalLabelPorCodigo: Record<string, string> = {
 };
 
 export default function AuditoriaClient() {
+  const { area } = useArea();
   const [searchTerm, setSearchTerm] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [tecnicoFilter, setTecnicoFilter] = useState('Todos los Técnicos');
@@ -234,13 +236,14 @@ export default function AuditoriaClient() {
       const { data, error } = await supabase
         .from('perfiles')
         .select('id_usuario, nombre')
-        .in('rol', ['Técnico', 'Supervisor']);
+        .in('rol', ['Técnico', 'Supervisor'])
+        .contains('areas', [area]);
       if (!error && data) {
         setTecnicos(data);
       }
     };
     fetchTecnicos();
-  }, []);
+  }, [area]);
 
   useEffect(() => {
     const fetchCatalogoItems = async () => {
@@ -294,7 +297,8 @@ export default function AuditoriaClient() {
     const query = supabase
       .from('ordenes')
       .select('*', withCount ? { count: 'exact' } : undefined)
-      .neq('estado', 'Pendiente');
+      .neq('estado', 'Pendiente')
+      .eq('area', area);
 
     if (search) {
       query.or(`contrato.ilike.%${search}%,orden_trabajo.ilike.%${search}%`);
@@ -320,7 +324,7 @@ export default function AuditoriaClient() {
     query.order('orden_trabajo', { ascending: false }); // desempate: evita repetir/saltar filas al paginar
 
     return query;
-  }, [tecnicos]);
+  }, [tecnicos, area]);
 
   const fetchOrdenes = useCallback(async () => {
     setLoadingOrdenes(true);
