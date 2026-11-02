@@ -221,6 +221,21 @@ const mapHtmlFieldsToOrden = (fields: Record<string, string>) => {
   const unidadKey = buscar(k => normalizarTexto(k).includes('unidad') && normalizarTexto(k).includes('operativa'));
   const unidadOperativa = unidadKey ? fields[unidadKey].trim() : '';
 
+  // Datos adicionales de la solicitud (etiquetas exactas del reporte, sin tildes/mayúsculas)
+  const leerCampo = (...etiquetas: string[]): string | null => {
+    const k = keys.find(key => etiquetas.includes(normalizarTexto(key).trim()));
+    const v = k ? fields[k].trim() : '';
+    return v || null;
+  };
+  const solicitud = leerCampo('solicitud');
+  const actividad = leerCampo('actividad');
+  const telefono = leerCampo('telefono');
+  const categoria = leerCampo('categoria');
+  const tipoInmueble = leerCampo('tipo de inmueble');
+  const estadoProducto = leerCampo('estado del producto');
+  const marcaMedidor = leerCampo('marca del medidor');
+  const horaAcordada = leerCampo('hora acordada');
+
   // Plan comercial: viene como "//PLAN COMERCIAL CONSTRUCTORA"; se guarda sin las barras.
   const planKey = buscar(k => normalizarTexto(k).includes('plan com'));
   const planComercial = planKey ? (fields[planKey].split('//').pop() || '').trim() : '';
@@ -240,10 +255,38 @@ const mapHtmlFieldsToOrden = (fields: Record<string, string>) => {
     numero_medidor: numeroMedidor,
     unidad_operativa: unidadOperativa || null,
     plan_comercial: planComercial || null,
+    solicitud,
+    actividad,
+    telefono,
+    categoria,
+    tipo_inmueble: tipoInmueble,
+    estado_producto: estadoProducto,
+    marca_medidor: marcaMedidor,
+    hora_acordada: horaAcordada,
+    alerta_orden: null as string | null,       // 'DOBLE' | 'POSIBLE_DUPLICADA' | null
+    orden_relacionada: null as string | null,  // orden con el mismo contrato que originó la alerta
   };
 };
 
 // ─── Componente principal ────────────────────────────────────────────
+
+// ─── Filtro de órdenes dobles (solo flujo HTML) ──────────────────────
+const COL_FECHA_CIERRE = 'fecha_cierre'; // columna donde se guarda la fecha de cierre (verificar con grep)
+const COLUMNAS_FILTRO_DOBLE: string = `orden_trabajo, contrato, estado, area, ${COL_FECHA_CIERRE}`;
+const TIPO_TRABAJO_ESPECIAL = '12137';
+const PALABRA_CLAVE_ESPECIAL = 'enmallamiento';
+const VENTANA_MIN_DIAS = 14; // 2 semanas
+const VENTANA_MAX_DIAS = 21; // 3 semanas
+
+/** Área que el trigger de la base asignará según la Unidad Operativa
+ * (5218→SA; 5212/5213→RI; sin unidad→SA; otra→SIN). Solo para comparar contratos dentro del mismo área. */
+const areaDeUnidad = (unidad: unknown): string => {
+  const codigo = (String(unidad || '').match(/^\s*(\d+)/) || [])[1] || '';
+  if (!codigo) return 'SA';
+  if (codigo === '5218') return 'SA';
+  if (codigo === '5212' || codigo === '5213') return 'RI';
+  return 'SIN';
+};
 
 interface UploadExcelButtonProps {
   onUploadSuccess?: () => void;
@@ -311,6 +354,84 @@ export default function UploadExcelButton({ onUploadSuccess }: UploadExcelButton
           o => !existentesSet.has(String(o.orden_trabajo))
         );
 
+        // ─── Filtro de órdenes dobles: mismo contrato (y misma área), otro número de orden ───
+        const resumenDobles: string[] = [];
+        const resumenPosibles: string[] = [];
+        {
+          type PrevOrden = { orden_trabajo: string; area: string; estado: string; cierre: string | null };
+          const porContrato = new Map<string, PrevOrden[]>();
+
+          // 1) Órdenes que la app ya tiene con esos contratos (abiertas y cerradas)
+          const contratos = Array.from(
+            new Set(nuevasOrdenes.map(o => String(o.contrato || '').trim()).filter(Boolean))
+          );
+          for (let i = 0; i < contratos.length; i += 100) {
+            const { data: previas, error: prevError } = await supabase
+              .from('ordenes')
+              .select(COLUMNAS_FILTRO_DOBLE)
+              .in('contrato', contratos.slice(i, i + 100));
+            if (prevError) throw prevError;
+            for (const r of ((previas || []) as unknown as Record<string, unknown>[])) {
+              const c = String(r.contrato || '').trim();
+              if (!c) continue;
+              const lista = porContrato.get(c) || [];
+              lista.push({
+                orden_trabajo: String(r.orden_trabajo),
+                area: String(r.area || ''),
+                estado: String(r.estado || ''),
+                cierre: r[COL_FECHA_CIERRE] ? String(r[COL_FECHA_CIERRE]) : null,
+              });
+              porContrato.set(c, lista);
+            }
+          }
+
+          // 2) Revisar cada orden nueva (también contra las anteriores de este mismo archivo)
+          const ahora = Date.now();
+          const DIA_MS = 86400000;
+          for (const o of nuevasOrdenes) {
+            const contrato = String(o.contrato || '').trim();
+            if (!contrato) continue; // sin contrato no hay con qué comparar: se sube normal
+            const numero = String(o.orden_trabajo);
+            const areaNueva = areaDeUnidad(o.unidad_operativa);
+            const previas = (porContrato.get(contrato) || []).filter(
+              p => p.area === areaNueva && p.orden_trabajo !== numero
+            );
+
+            if (previas.length > 0) {
+              o.alerta_orden = 'DOBLE';
+              o.orden_relacionada = previas[0].orden_trabajo;
+
+              // Caso especial: tipo de trabajo 12137 + "enmallamiento" + orden cerrada hace 2-3 semanas
+              const codigoTipo = (String(o.descripcion_del_trabajo || '').match(/^\s*(\d+)/) || [])[1] || '';
+              const dice = normalizarTexto(String(o.observacion_solicitud || '')).includes(PALABRA_CLAVE_ESPECIAL);
+              if (codigoTipo === TIPO_TRABAJO_ESPECIAL && dice) {
+                const cerrada = previas.find(p => {
+                  if (p.estado !== 'Efectiva' || !p.cierre) return false;
+                  const t = new Date(p.cierre).getTime();
+                  if (isNaN(t)) return false;
+                  const dias = (ahora - t) / DIA_MS;
+                  return dias >= VENTANA_MIN_DIAS && dias <= VENTANA_MAX_DIAS;
+                });
+                if (cerrada) {
+                  o.alerta_orden = 'POSIBLE_DUPLICADA';
+                  o.orden_relacionada = cerrada.orden_trabajo;
+                }
+              }
+
+              if (o.alerta_orden === 'POSIBLE_DUPLICADA') {
+                resumenPosibles.push(`${numero} (contrato ${contrato}, cerrada la ${o.orden_relacionada})`);
+              } else {
+                resumenDobles.push(`${numero} (contrato ${contrato}, ya existe la ${o.orden_relacionada})`);
+              }
+            }
+
+            // Registrar esta orden para las siguientes del mismo archivo
+            const lista = porContrato.get(contrato) || [];
+            lista.push({ orden_trabajo: numero, area: areaNueva, estado: 'Pendiente', cierre: null });
+            porContrato.set(contrato, lista);
+          }
+        }
+
         let insertadasCount = 0;
         let otraAreaCount = 0;
         if (nuevasOrdenes.length > 0) {
@@ -340,7 +461,21 @@ export default function UploadExcelButton({ onUploadSuccess }: UploadExcelButton
         if (otraAreaCount > 0) {
           message += ` · ${otraAreaCount} de otra área (cambia de área en el menú para verlas)`;
         }
-        toast.success(message, { id: 'excel-upload' });
+        const listar = (items: string[]) =>
+          items.slice(0, 8).join('\n   ') + (items.length > 8 ? `\n   …y ${items.length - 8} más` : '');
+        const lineas: string[] = [message];
+        if (resumenPosibles.length > 0) {
+          lineas.push(`⚠ ${resumenPosibles.length} posible(s) duplicada(s) (12137 + enmallamiento, contrato cerrado hace 2-3 semanas):\n   ${listar(resumenPosibles)}`);
+        }
+        if (resumenDobles.length > 0) {
+          lineas.push(`⚠ ${resumenDobles.length} orden(es) doble(s) (mismo contrato, otro número de orden):\n   ${listar(resumenDobles)}`);
+        }
+        const hayAlertas = resumenPosibles.length + resumenDobles.length > 0;
+        toast.success(lineas.join('\n'), {
+          id: 'excel-upload',
+          duration: hayAlertas ? 20000 : 4000,
+          style: { whiteSpace: 'pre-line', maxWidth: 620 },
+        });
 
       } else {
         // ─── Flujo Excel (lógica original) ─────────────────────

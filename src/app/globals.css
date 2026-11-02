@@ -14,3 +14,38 @@ body {
 html {
   font-size: 90%;
 }
+
+/* Foco visible para navegación con teclado (botones, enlaces y controles sin anillo propio) */
+:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+}
+
+/* ── Modal "Reporte de la Orden" y menú de acciones ── */
+@keyframes reporteFade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes reportePop {
+  from { opacity: 0; transform: translateY(6px) scale(0.96); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes menuPop {
+  from { opacity: 0; transform: scale(0.95); }
+  to   { opacity: 1; transform: none; }
+}
+.reporte-overlay { animation: reporteFade 160ms ease-out both; }
+.reporte-modal   { animation: reportePop 220ms cubic-bezier(0.23, 1, 0.32, 1) both; }
+.menu-pop        { transform-origin: top right; animation: menuPop 150ms cubic-bezier(0.23, 1, 0.32, 1) both; }
+.reporte-modal button {
+  transition: transform 140ms cubic-bezier(0.23, 1, 0.32, 1), color 150ms ease, background-color 150ms ease, border-color 150ms ease, opacity 150ms ease;
+}
+.reporte-modal button:not(:disabled):active { transform: scale(0.97); }
+@media (prefers-reduced-motion: reduce) {
+  .reporte-overlay, .reporte-modal, .menu-pop { animation: none; }
+  .reporte-modal button { transition: none; }
+}
+
+/* ── Barra de asignación en bloque (Despacho) ── */
+.barra-asignacion { transform-origin: bottom center; animation: menuPop 200ms cubic-bezier(0.23, 1, 0.32, 1) both; }
+.combo-pop        { transform-origin: bottom left;   animation: menuPop 150ms cubic-bezier(0.23, 1, 0.32, 1) both; }
+@media (prefers-reduced-motion: reduce) {
+  .barra-asignacion, .combo-pop { animation: none; }
+}

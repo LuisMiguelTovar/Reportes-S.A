@@ -7,6 +7,9 @@ import UploadExcelButton from '@/components/UploadExcelButton';
 import UserProfile from '@/components/UserProfile';
 import NotificationsBell from '@/components/NotificationsBell';
 import { useArea } from '@/components/AreaProvider';
+import toast from 'react-hot-toast';
+import FiltroLista, { nombreTitulo, etiquetaTrabajo } from '@/components/FiltroLista';
+import TecnicoCombobox from '@/components/TecnicoCombobox';
 
 interface ItemReporte {
   id: string;
@@ -235,6 +238,30 @@ export default function DespachoTableClient() {
   const [selectedOrdenes, setSelectedOrdenes] = useState<string[]>([]);
   const [tecnicos, setTecnicos] = useState<Tecnico[]>([]);
   const [selectedTecnicoId, setSelectedTecnicoId] = useState('');
+
+  // Órdenes activas por técnico (mismo criterio del Despacho: no Efectiva ni Cancelada, del área actual).
+  // Se consulta solo mientras la barra de asignación está visible.
+  const [cargaPorTecnico, setCargaPorTecnico] = useState<Record<string, number>>({});
+  const hayOrdenesSeleccionadas = selectedOrdenes.length > 0;
+  useEffect(() => {
+    if (!hayOrdenesSeleccionadas) return;
+    let cancelado = false;
+    (async () => {
+      const { data, error } = await supabase
+        .from('ordenes')
+        .select('id_tecnico_asignado')
+        .not('estado', 'in', '("Efectiva","Cancelada")')
+        .eq('area', area)
+        .not('id_tecnico_asignado', 'is', null);
+      if (cancelado || error || !data) return;
+      const conteo: Record<string, number> = {};
+      for (const fila of data as { id_tecnico_asignado: string }[]) {
+        conteo[fila.id_tecnico_asignado] = (conteo[fila.id_tecnico_asignado] || 0) + 1;
+      }
+      setCargaPorTecnico(conteo);
+    })();
+    return () => { cancelado = true; };
+  }, [hayOrdenesSeleccionadas, area]);
   const [lastUpdateDate, setLastUpdateDate] = useState<string | null>(null);
 
   // ── Menú kebab ──
@@ -490,6 +517,27 @@ export default function DespachoTableClient() {
     setIsInitialLoad(false);
   }, [buildFilteredQuery, debouncedSearch, localidadFilter, descripcionFilter, fechaFilter, tecnicoFilter, estadoFilter, ordenSelected, contratoSelected, ubicacionSelected, trabajoSelected, estadoColSelected, slaSelected, fechaProgSelected, fechaAsigSelected, tecnicoColSelected, currentPage]);
 
+  // ── Cantidades para los botones de estado (respetan los demás filtros activos) ──
+  const [conteoEstados, setConteoEstados] = useState<{ todos: number; pendiente: number; programada: number } | null>(null);
+  useEffect(() => {
+    let cancelado = false;
+    (async () => {
+      const contar = async (estado: string) => {
+        const q = buildFilteredQuery(
+          debouncedSearch, localidadFilter, descripcionFilter, fechaFilter, tecnicoFilter, estado,
+          ordenSelected, contratoSelected, ubicacionSelected, trabajoSelected, estadoColSelected, slaSelected, fechaProgSelected, fechaAsigSelected, tecnicoColSelected, true
+        );
+        q.range(0, 0);
+        const { count, error } = await q;
+        return error ? null : (count ?? 0);
+      };
+      const [todos, pendiente, programada] = await Promise.all([contar('Todos'), contar('Pendiente'), contar('Programada')]);
+      if (cancelado || todos === null || pendiente === null || programada === null) return;
+      setConteoEstados({ todos, pendiente, programada });
+    })();
+    return () => { cancelado = true; };
+  }, [buildFilteredQuery, debouncedSearch, localidadFilter, descripcionFilter, fechaFilter, tecnicoFilter, ordenSelected, contratoSelected, ubicacionSelected, trabajoSelected, estadoColSelected, slaSelected, fechaProgSelected, fechaAsigSelected, tecnicoColSelected, ordenes]);
+
   type FilaFiltroOpciones = {
     orden_trabajo: string;
     contrato: string;
@@ -635,12 +683,15 @@ export default function DespachoTableClient() {
   // Fetch real technicians from perfiles table
   useEffect(() => {
     const fetchTecnicos = async () => {
-      const { data, error } = await supabase
+      let consulta = supabase
         .from('perfiles')
         .select('id_usuario, nombre')
-        .in('rol', ['Técnico', 'Supervisor'])
-        .contains('areas', [area])
-        .order('nombre', { ascending: true });
+        .in('rol', ['Técnico', 'Supervisor']);
+      // SA: solo los de su área (igual que antes). RI: todos los técnicos y supervisores.
+      if (area !== 'RI') {
+        consulta = consulta.contains('areas', [area]);
+      }
+      const { data, error } = await consulta.order('nombre', { ascending: true });
 
       if (!error && data) {
         setTecnicos(data);
@@ -834,14 +885,16 @@ export default function DespachoTableClient() {
 
       if (errorProgramadas || errorResto) {
         console.error('Error al asignar órdenes:', errorProgramadas || errorResto);
-        alert('Hubo un error al asignar las órdenes.');
+        toast.error('Hubo un error al asignar las órdenes.');
       } else {
-        alert('Órdenes asignadas exitosamente.');
-        window.location.reload();
+        toast.success('Órdenes asignadas exitosamente.');
+        setSelectedOrdenes([]);
+        setSelectedTecnicoId('');
+        fetchOrdenes();
       }
     } catch (err) {
       console.error(err);
-      alert('Hubo un error inesperado al asignar.');
+      toast.error('Hubo un error inesperado al asignar.');
     } finally {
       setIsAssigning(false);
     }
@@ -866,14 +919,14 @@ export default function DespachoTableClient() {
 
       if (error) {
         console.error('Error al eliminar órdenes:', error);
-        alert('Hubo un error al eliminar las órdenes.');
+        toast.error('Hubo un error al eliminar las órdenes.');
       } else {
         setSelectedOrdenes(prev => prev.filter(id => !ids.includes(id)));
         fetchOrdenes();
       }
     } catch (err) {
       console.error(err);
-      alert('Hubo un error inesperado al eliminar.');
+      toast.error('Hubo un error inesperado al eliminar.');
     } finally {
       setIsDeleting(false);
     }
@@ -902,7 +955,7 @@ export default function DespachoTableClient() {
       ));
     } else {
       console.error('Error al reasignar técnico:', error);
-      alert('Hubo un error al reasignar el técnico.');
+      toast.error('Hubo un error al reasignar el técnico.');
     }
   };
 
@@ -1011,6 +1064,81 @@ export default function DespachoTableClient() {
     } catch (err) {
       console.error(err);
       setErrorGuardar('Error inesperado al guardar la actualización.');
+    } finally {
+      setIsGuardando(false);
+    }
+  };
+
+  // ── Cerrar una "posible duplicada" con la orden ya cerrada del mismo contrato ──
+  const handleCerrarConOrdenRelacionada = async () => {
+    if (!reporteOrden) return;
+    const relacionada = String(reporteOrden.orden_relacionada || '');
+    if (!relacionada) return;
+
+    if (!window.confirm(
+      `¿Cerrar la orden ${reporteOrden.orden_trabajo} como Efectiva con la orden ${relacionada} (mismo contrato, ya cerrada)? ` +
+      `Se copiarán la fecha de cierre y las fotos de la orden ${relacionada}.`
+    )) return;
+
+    setIsGuardando(true);
+    setErrorGuardar(null);
+    try {
+      // 1. Datos de cierre de la orden relacionada
+      const { data: rel, error: errRel } = await supabase
+        .from('ordenes')
+        .select('estado, fecha_cierre')
+        .eq('orden_trabajo', relacionada)
+        .single();
+      if (errRel || !rel) {
+        setErrorGuardar(`No se encontró la orden ${relacionada}.`);
+        return;
+      }
+      if (rel.estado !== 'Efectiva') {
+        setErrorGuardar(`La orden ${relacionada} ya no está Efectiva (estado: ${rel.estado}). No se puede cerrar con ella.`);
+        return;
+      }
+
+      // 2. Fotos del último cierre Efectivo de esa orden
+      const { data: hist } = await supabase
+        .from('historial_ordenes')
+        .select('fotos')
+        .eq('orden_trabajo', relacionada)
+        .eq('estado', 'Efectiva')
+        .order('fecha', { ascending: false })
+        .limit(1);
+      const fotosCopiadas = (hist && hist[0]?.fotos) || null;
+
+      // 3. Historial de esta orden
+      const { error: errHist } = await supabase.from('historial_ordenes').insert({
+        orden_trabajo: reporteOrden.orden_trabajo,
+        estado: 'Efectiva',
+        comentario: `Cerrada con la orden ${relacionada} (mismo contrato, ya ejecutada).`,
+        fotos: fotosCopiadas,
+        usuario: user?.email || '',
+        rol: 'admin',
+      });
+      if (errHist) {
+        setErrorGuardar(`Error al guardar historial: ${errHist.message}`);
+        return;
+      }
+
+      // 4. Cerrar la orden con la fecha de cierre de la relacionada
+      const { error: errUpd } = await supabase
+        .from('ordenes')
+        .update({ estado: 'Efectiva', fecha_cierre: rel.fecha_cierre || new Date().toISOString() })
+        .eq('orden_trabajo', reporteOrden.orden_trabajo);
+      if (errUpd) {
+        setErrorGuardar(`Error al actualizar la orden: ${errUpd.message}`);
+        return;
+      }
+
+      // 5. La orden cerrada sale del panel de despacho
+      setReporteOrden(null);
+      setHistorial([]);
+      fetchOrdenes();
+    } catch (err) {
+      console.error(err);
+      setErrorGuardar('Error inesperado al cerrar con la orden relacionada.');
     } finally {
       setIsGuardando(false);
     }
@@ -1140,88 +1268,123 @@ export default function DespachoTableClient() {
         </div>
       </div>
       {/* Controles de Filtros */}
-      <div className="flex flex-col gap-2">
-        <div className="relative w-full">
-          <svg className="w-5 h-5 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
-          <input
-            type="text"
-            placeholder="Buscar por Contrato, Orden, Dirección o Barrio..."
-            className="w-full pl-10 pr-4 py-2.5 bg-white border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-sm text-gray-700"
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-          />
+      <div className="bg-white border border-gray-100 rounded-2xl shadow-[0_8px_24px_rgba(15,23,42,0.05)]">
+        <div role="group" aria-label="Estado de las órdenes" style={{ display: 'flex', gap: 28, padding: '0 24px', borderBottom: '1px solid #E3E9F4' }}>
+          {([
+            ['Todos', 'Todas', conteoEstados?.todos],
+            ['Pendiente', 'Pendientes', conteoEstados?.pendiente],
+            ['Programada', 'Programadas', conteoEstados?.programada],
+          ] as const).map(([valor, etiqueta, n]) => {
+            const activa = estadoFilter === valor;
+            return (
+              <button
+                key={valor}
+                type="button"
+                aria-pressed={activa}
+                onClick={() => setEstadoFilter(valor)}
+                style={{
+                  minHeight: 48, padding: 0, border: 0, marginBottom: -1, background: 'none', cursor: 'pointer',
+                  borderBottom: `2px solid ${activa ? '#2563EB' : 'transparent'}`,
+                  color: activa ? '#0F2A5C' : '#64748B', fontSize: 14, fontWeight: activa ? 600 : 500,
+                  transition: 'color 150ms ease, border-color 150ms ease',
+                }}
+              >
+                {etiqueta}
+                {n !== undefined && (
+                  <span style={{ marginLeft: 6, fontWeight: 500, color: '#64748B', fontVariantNumeric: 'tabular-nums' }}>{n}</span>
+                )}
+              </button>
+            );
+          })}
         </div>
-        <div className="flex items-center gap-2">
-          <select
-            className="border border-gray-200 rounded-[10px] h-10 px-4 bg-white text-sm text-gray-700 shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors duration-150 w-[180px]"
-            value={localidadFilter}
-            onChange={(e) => setLocalidadFilter(e.target.value)}
-          >
-            <option value="Todas">Todas las Localidades</option>
-            {localidadesUnicas.map(loc => (
-              <option key={loc} value={loc}>{loc}</option>
-            ))}
-          </select>
-          <select
-            className="border border-gray-200 rounded-[10px] h-10 px-4 bg-white text-sm text-gray-700 shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors duration-150 w-[240px] truncate"
-            value={descripcionFilter}
-            onChange={(e) => setDescripcionFilter(e.target.value)}
-          >
-            <option value="Todas las Descripciones">Todas las Descripciones</option>
-            {descripcionesUnicas.map(desc => (
-              <option key={desc} value={desc}>{desc}</option>
-            ))}
-          </select>
-          <select
-            className="border border-gray-200 rounded-[10px] h-10 px-4 bg-white text-sm text-gray-700 shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors duration-150 w-[180px]"
-            value={tecnicoFilter}
-            onChange={(e) => setTecnicoFilter(e.target.value)}
-          >
-            <option value="Todos">Todos los Técnicos</option>
-            <option value="Sin asignar">Sin asignar</option>
-            {tecnicos.map(tech => (
-              <option key={tech.id_usuario} value={tech.id_usuario}>{tech.nombre}</option>
-            ))}
-          </select>
-          <select
-            className="border border-gray-200 rounded-[10px] h-10 px-4 bg-white text-sm text-gray-700 shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors duration-150 w-[150px]"
-            value={fechaFilter}
-            onChange={(e) => setFechaFilter(e.target.value)}
-          >
-            <option value="Todas">Todas las fechas</option>
-            <option value="Hoy">Hoy (0 días)</option>
-            <option value="Últimos 3 días">Últimos 3 días</option>
-            <option value="Vencidas">Vencidas ({'>='} 3 días)</option>
-          </select>
-          <select
-            className="border border-gray-200 rounded-[10px] h-10 px-4 bg-white text-sm text-gray-700 shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors duration-150"
-            value={estadoFilter}
-            onChange={(e) => setEstadoFilter(e.target.value)}
-          >
-            <option value="Todos">Todos los Estados</option>
-            <option value="Pendiente">Pendiente</option>
-            <option value="Programada">Programada</option>
-          </select>
-          <button
-            type="button"
-            onClick={() => { 
-              setSearchTerm(''); setLocalidadFilter('Todas'); setDescripcionFilter('Todas las Descripciones'); setFechaFilter('Todas'); setTecnicoFilter('Todos'); setEstadoFilter('Todos');
-              setOrdenSelected(null);
-              setContratoSelected(null);
-              setUbicacionSelected(null);
-              setTrabajoSelected(null);
-              setEstadoColSelected(null);
-              setSlaSelected(null);
-              setFechaProgSelected(null);
-              setFechaAsigSelected(null);
-              setTecnicoColSelected(null);
-            }}
-            className="ml-auto flex items-center gap-1.5 text-sm text-blue-600 hover:text-blue-700 whitespace-nowrap"
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
-            Limpiar filtros
-          </button>
-        </div>
+
+        {(() => {
+          const hayFiltros =
+            searchTerm !== '' || localidadFilter !== 'Todas' || descripcionFilter !== 'Todas las Descripciones' ||
+            fechaFilter !== 'Todas' || tecnicoFilter !== 'Todos' || estadoFilter !== 'Todos' ||
+            [ordenSelected, contratoSelected, ubicacionSelected, trabajoSelected, estadoColSelected, slaSelected, fechaProgSelected, fechaAsigSelected, tecnicoColSelected].some(s => s !== null);
+          return (
+            <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 10, padding: '14px 24px' }}>
+              <div style={{ position: 'relative', flex: '1 1 320px', minWidth: 260 }}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#64748B" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ position: 'absolute', left: 14, top: 14 }}>
+                  <circle cx="11" cy="11" r="7" /><path d="M21 21l-4.3-4.3" />
+                </svg>
+                <input
+                  type="text"
+                  placeholder="Buscar por contrato, orden, dirección o barrio"
+                  aria-label="Buscar por contrato, orden, dirección o barrio"
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  style={{ boxSizing: 'border-box', width: '100%', minHeight: 44, padding: '0 14px 0 40px', border: '1px solid #CBD5E1', borderRadius: 10, background: '#fff', fontSize: 14, color: '#0F2A5C' }}
+                />
+              </div>
+
+              <FiltroLista
+                etiqueta="Localidad"
+                value={localidadFilter}
+                valorVacio="Todas"
+                textoVacio="Todas las localidades"
+                opciones={localidadesUnicas.map(loc => ({ value: loc, label: loc }))}
+                onChange={setLocalidadFilter}
+              />
+              <FiltroLista
+                etiqueta="Tipo de trabajo"
+                value={descripcionFilter}
+                valorVacio="Todas las Descripciones"
+                textoVacio="Todos los tipos de trabajo"
+                opciones={descripcionesUnicas.map(desc => ({ value: desc, label: etiquetaTrabajo(desc) }))}
+                onChange={setDescripcionFilter}
+              />
+              <FiltroLista
+                etiqueta="Técnico"
+                value={tecnicoFilter}
+                valorVacio="Todos"
+                textoVacio="Todos los técnicos"
+                buscable
+                opciones={[
+                  { value: 'Sin asignar', label: 'Sin asignar' },
+                  ...tecnicos
+                    .map(t => ({ value: t.id_usuario, label: nombreTitulo(t.nombre) }))
+                    .sort((a, b) => a.label.localeCompare(b.label, 'es')),
+                ]}
+                onChange={setTecnicoFilter}
+              />
+              <FiltroLista
+                etiqueta="Fecha"
+                value={fechaFilter}
+                valorVacio="Todas"
+                textoVacio="Todas las fechas"
+                opciones={[
+                  { value: 'Hoy', label: 'Hoy (0 días)' },
+                  { value: 'Últimos 3 días', label: 'Últimos 3 días' },
+                  { value: 'Vencidas', label: 'Vencidas (3 días o más)' },
+                ]}
+                onChange={setFechaFilter}
+              />
+
+              {hayFiltros && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSearchTerm(''); setLocalidadFilter('Todas'); setDescripcionFilter('Todas las Descripciones'); setFechaFilter('Todas'); setTecnicoFilter('Todos'); setEstadoFilter('Todos');
+                    setOrdenSelected(null);
+                    setContratoSelected(null);
+                    setUbicacionSelected(null);
+                    setTrabajoSelected(null);
+                    setEstadoColSelected(null);
+                    setSlaSelected(null);
+                    setFechaProgSelected(null);
+                    setFechaAsigSelected(null);
+                    setTecnicoColSelected(null);
+                  }}
+                  style={{ minHeight: 44, padding: '0 10px', border: 0, background: 'none', color: '#1D4ED8', fontSize: 14, fontWeight: 500, cursor: 'pointer', whiteSpace: 'nowrap' }}
+                >
+                  Limpiar filtros
+                </button>
+              )}
+            </div>
+          );
+        })()}
       </div>
 
       {/* Tabla de Despacho */}
@@ -1234,6 +1397,7 @@ export default function DespachoTableClient() {
                   <input
                     type="checkbox"
                     className="rounded"
+                    aria-label="Seleccionar todas las órdenes visibles"
                     checked={isAllVisibleSelected}
                     onChange={handleSelectAll}
                   />
@@ -1251,7 +1415,8 @@ export default function DespachoTableClient() {
                         setColumnFilterPosition({ top: rect.bottom + 4, left: rect.left });
                         setOpenColumnFilter(p => p === 'orden' ? null : 'orden');
                       }}
-                      className={`p-0.5 rounded hover:bg-gray-200 ${ordenSelected !== null ? 'text-blue-600' : 'text-gray-400'}`}
+                      aria-label="Filtrar columna Orden"
+                      className={`p-1.5 -m-1 rounded hover:bg-gray-200 ${ordenSelected !== null ? 'text-blue-600' : 'text-gray-400'}`}
                     >
                       <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" /></svg>
                     </button>
@@ -1281,7 +1446,8 @@ export default function DespachoTableClient() {
                         setColumnFilterPosition({ top: rect.bottom + 4, left: rect.left });
                         setOpenColumnFilter(p => p === 'contrato' ? null : 'contrato');
                       }}
-                      className={`p-0.5 rounded hover:bg-gray-200 ${contratoSelected !== null ? 'text-blue-600' : 'text-gray-400'}`}
+                      aria-label="Filtrar columna Contrato"
+                      className={`p-1.5 -m-1 rounded hover:bg-gray-200 ${contratoSelected !== null ? 'text-blue-600' : 'text-gray-400'}`}
                     >
                       <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" /></svg>
                     </button>
@@ -1311,7 +1477,8 @@ export default function DespachoTableClient() {
                         setColumnFilterPosition({ top: rect.bottom + 4, left: rect.left });
                         setOpenColumnFilter(p => p === 'ubicacion' ? null : 'ubicacion');
                       }}
-                      className={`p-0.5 rounded hover:bg-gray-200 ${ubicacionSelected !== null ? 'text-blue-600' : 'text-gray-400'}`}
+                      aria-label="Filtrar columna Ubicación"
+                      className={`p-1.5 -m-1 rounded hover:bg-gray-200 ${ubicacionSelected !== null ? 'text-blue-600' : 'text-gray-400'}`}
                     >
                       <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" /></svg>
                     </button>
@@ -1341,7 +1508,8 @@ export default function DespachoTableClient() {
                         setColumnFilterPosition({ top: rect.bottom + 4, left: rect.left });
                         setOpenColumnFilter(p => p === 'trabajo' ? null : 'trabajo');
                       }}
-                      className={`p-0.5 rounded hover:bg-gray-200 ${trabajoSelected !== null ? 'text-blue-600' : 'text-gray-400'}`}
+                      aria-label="Filtrar columna Trabajo"
+                      className={`p-1.5 -m-1 rounded hover:bg-gray-200 ${trabajoSelected !== null ? 'text-blue-600' : 'text-gray-400'}`}
                     >
                       <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" /></svg>
                     </button>
@@ -1371,7 +1539,8 @@ export default function DespachoTableClient() {
                         setColumnFilterPosition({ top: rect.bottom + 4, left: rect.left });
                         setOpenColumnFilter(p => p === 'estado' ? null : 'estado');
                       }}
-                      className={`p-0.5 rounded hover:bg-gray-200 ${estadoColSelected !== null ? 'text-blue-600' : 'text-gray-400'}`}
+                      aria-label="Filtrar columna Estado"
+                      className={`p-1.5 -m-1 rounded hover:bg-gray-200 ${estadoColSelected !== null ? 'text-blue-600' : 'text-gray-400'}`}
                     >
                       <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" /></svg>
                     </button>
@@ -1401,7 +1570,8 @@ export default function DespachoTableClient() {
                         setColumnFilterPosition({ top: rect.bottom + 4, left: rect.left });
                         setOpenColumnFilter(p => p === 'sla' ? null : 'sla');
                       }}
-                      className={`p-0.5 rounded hover:bg-gray-200 ${slaSelected !== null ? 'text-blue-600' : 'text-gray-400'}`}
+                      aria-label="Filtrar columna Días / SLA"
+                      className={`p-1.5 -m-1 rounded hover:bg-gray-200 ${slaSelected !== null ? 'text-blue-600' : 'text-gray-400'}`}
                     >
                       <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" /></svg>
                     </button>
@@ -1431,7 +1601,8 @@ export default function DespachoTableClient() {
                         setColumnFilterPosition({ top: rect.bottom + 4, left: rect.left });
                         setOpenColumnFilter(p => p === 'fechaAsig' ? null : 'fechaAsig');
                       }}
-                      className={`p-0.5 rounded hover:bg-gray-200 ${fechaAsigSelected !== null ? 'text-blue-600' : 'text-gray-400'}`}
+                      aria-label="Filtrar columna Fecha de asignación"
+                      className={`p-1.5 -m-1 rounded hover:bg-gray-200 ${fechaAsigSelected !== null ? 'text-blue-600' : 'text-gray-400'}`}
                     >
                       <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" /></svg>
                     </button>
@@ -1461,7 +1632,8 @@ export default function DespachoTableClient() {
                         setColumnFilterPosition({ top: rect.bottom + 4, left: rect.left });
                         setOpenColumnFilter(p => p === 'fechaProg' ? null : 'fechaProg');
                       }}
-                      className={`p-0.5 rounded hover:bg-gray-200 ${fechaProgSelected !== null ? 'text-blue-600' : 'text-gray-400'}`}
+                      aria-label="Filtrar columna Fecha programada"
+                      className={`p-1.5 -m-1 rounded hover:bg-gray-200 ${fechaProgSelected !== null ? 'text-blue-600' : 'text-gray-400'}`}
                     >
                       <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" /></svg>
                     </button>
@@ -1491,7 +1663,8 @@ export default function DespachoTableClient() {
                         setColumnFilterPosition({ top: rect.bottom + 4, left: rect.left });
                         setOpenColumnFilter(p => p === 'tecnico' ? null : 'tecnico');
                       }}
-                      className={`p-0.5 rounded hover:bg-gray-200 ${tecnicoColSelected !== null ? 'text-blue-600' : 'text-gray-400'}`}
+                      aria-label="Filtrar columna Técnico"
+                      className={`p-1.5 -m-1 rounded hover:bg-gray-200 ${tecnicoColSelected !== null ? 'text-blue-600' : 'text-gray-400'}`}
                     >
                       <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" /></svg>
                     </button>
@@ -1528,6 +1701,7 @@ export default function DespachoTableClient() {
                       <input
                         type="checkbox"
                         className="rounded"
+                        aria-label={`Seleccionar orden ${row.orden_trabajo}`}
                         checked={selectedOrdenes.includes(row.orden_trabajo)}
                         onChange={(e) => handleSelectOne(row.orden_trabajo, e.target.checked)}
                       />
@@ -1545,15 +1719,15 @@ export default function DespachoTableClient() {
                     <td className="py-2.5 px-2.5" style={{ height: '72px', wordBreak: 'break-word' }}>
                       <div className="flex flex-col justify-center h-full gap-0.5">
                         <p className="flex items-start gap-1" style={{ fontSize: '14px', fontWeight: 600, color: '#111827' }}>
-                          <span className="text-gray-400">📍</span> {row.direccion}
+                          {row.direccion}
                         </p>
                         <p style={{ fontSize: '13px', fontWeight: 400, color: '#64748B' }}>{formatBarrio(row.barrio)}</p>
-                        <p style={{ fontSize: '12px', fontWeight: 400, color: '#94A3B8' }}>{row.localidad}</p>
+                        <p style={{ fontSize: '12px', fontWeight: 400, color: '#64748B' }}>{row.localidad}</p>
                       </div>
                     </td>
                     <td className="py-2.5 px-2.5 text-gray-500" style={{ height: '72px' }}>
                       <div className="flex flex-col justify-center h-full">
-                        <p style={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+                        <p title={row.descripcion_del_trabajo || undefined} style={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
                           {row.descripcion_del_trabajo || '-'}
                         </p>
                       </div>
@@ -1565,6 +1739,23 @@ export default function DespachoTableClient() {
                       >
                         {getEstadoBadge(row.estado).label}
                       </span>
+                      {row.alerta_orden ? (
+                        <span
+                          className="block mt-1 px-2 py-0.5 rounded-md text-[11px] font-semibold whitespace-nowrap w-fit"
+                          style={
+                            row.alerta_orden === 'POSIBLE_DUPLICADA'
+                              ? { background: '#FEE2E2', color: '#991B1B' }
+                              : { background: '#FFEDD5', color: '#9A3412' }
+                          }
+                          title={
+                            row.alerta_orden === 'POSIBLE_DUPLICADA'
+                              ? `Mismo contrato que la orden ${String(row.orden_relacionada || '')}, cerrada hace 2-3 semanas`
+                              : `Mismo contrato que la orden ${String(row.orden_relacionada || '')}`
+                          }
+                        >
+                          {row.alerta_orden === 'POSIBLE_DUPLICADA' ? 'Posible duplicada' : 'Orden doble'} · #{String(row.orden_relacionada || '')}
+                        </span>
+                      ) : null}
                     </td>
                     <td className="py-2.5 px-2.5">
                       {(() => {
@@ -1623,7 +1814,7 @@ export default function DespachoTableClient() {
                         <div
                           ref={menuRef}
                           style={{ position: 'fixed', top: menuPosition.top, left: menuPosition.left }}
-                          className="w-56 bg-white rounded-lg shadow-lg border border-gray-200 z-50 py-1 text-left"
+                          className="menu-pop w-56 bg-white rounded-lg shadow-lg border border-gray-200 z-50 py-1 text-left"
                         >
                           <button
                             className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
@@ -1721,44 +1912,88 @@ export default function DespachoTableClient() {
       </div>
 
       {/* Panel flotante de asignación masiva */}
+      {selectedOrdenes.length > 0 && <div style={{ height: 96 }} aria-hidden="true" />}
       {selectedOrdenes.length > 0 && (
-        <div className="fixed bottom-0 left-64 right-0 bg-white border-t border-gray-200 p-4 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)] flex items-center justify-between z-10">
-          <div className="flex items-center gap-4">
-            <div className="flex items-center gap-2">
-              <span className="flex items-center justify-center w-8 h-8 bg-blue-100 text-blue-700 rounded-full font-bold text-sm">
-                {selectedOrdenes.length}
-              </span>
-              <span className="text-sm font-medium text-gray-700">Órdenes seleccionadas</span>
+        <div className="fixed bottom-0 left-64 right-0 z-10 px-6 pb-4 pointer-events-none">
+          <div
+            role="region"
+            aria-label="Acciones sobre las órdenes seleccionadas"
+            className="barra-asignacion pointer-events-auto"
+            style={{
+              display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '12px 18px',
+              background: '#fff', border: '1px solid #E3E9F4', borderRadius: 14, padding: '14px 18px',
+              boxShadow: '0 8px 24px -8px rgba(15,42,92,0.18)',
+            }}
+          >
+            <div style={{ flex: '1 1 220px', minWidth: 0 }}>
+              <p role="status" aria-live="polite" style={{ margin: 0, fontSize: 14, fontWeight: 600, color: '#0F2A5C', fontVariantNumeric: 'tabular-nums' }}>
+                {selectedOrdenes.length} {selectedOrdenes.length === 1 ? 'orden seleccionada' : 'órdenes seleccionadas'}
+              </p>
+              <button
+                type="button"
+                onClick={() => { setSelectedOrdenes([]); setSelectedTecnicoId(''); }}
+                style={{ minHeight: 32, padding: 0, border: 0, background: 'none', color: '#1D4ED8', fontSize: 13, fontWeight: 500, cursor: 'pointer' }}
+              >
+                Limpiar selección
+              </button>
             </div>
-            <div className="text-sm text-gray-500 border-l border-gray-300 pl-4 hidden md:block">
-              Selección múltiple
+
+            <div style={{ width: 300, maxWidth: '100%' }}>
+              <TecnicoCombobox
+                tecnicos={tecnicos}
+                value={selectedTecnicoId}
+                onChange={setSelectedTecnicoId}
+                disabled={isAssigning}
+                carga={cargaPorTecnico}
+              />
+              {selectedTecnicoId && (() => {
+                // Las órdenes marcadas que ya son de ese técnico no suman carga nueva.
+                const yaSuyas = ordenes.filter(o => selectedOrdenes.includes(o.orden_trabajo) && o.id_tecnico_asignado === selectedTecnicoId).length;
+                const quedara = (cargaPorTecnico[selectedTecnicoId] || 0) + selectedOrdenes.length - yaSuyas;
+                return (
+                  <p style={{ margin: '4px 0 0', fontSize: 12, color: '#64748B', fontVariantNumeric: 'tabular-nums' }}>
+                    Quedará con {quedara} {quedara === 1 ? 'orden activa' : 'órdenes activas'}
+                  </p>
+                );
+              })()}
             </div>
-          </div>
-          <div className="flex items-center gap-4">
-            <select
-              className="border border-gray-300 rounded px-4 py-2 bg-white focus:outline-none focus:border-blue-500 text-sm"
-              value={selectedTecnicoId}
-              onChange={(e) => setSelectedTecnicoId(e.target.value)}
-            >
-              <option value="">Seleccionar técnico para bloque...</option>
-              {tecnicos.map(tech => (
-                <option key={tech.id_usuario} value={tech.id_usuario}>{tech.nombre}</option>
-              ))}
-            </select>
+
             <button
-              className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded-md font-medium transition shadow-sm text-sm disabled:opacity-50"
+              type="button"
+              className="active:scale-[0.97]"
               onClick={handleAsignarBloque}
               disabled={isAssigning || !selectedTecnicoId}
+              style={{
+                minHeight: 44, padding: '0 22px', border: 0, borderRadius: 10, fontSize: 14, fontWeight: 600,
+                background: (isAssigning || !selectedTecnicoId) ? '#CBD5E1' : '#2563EB',
+                color: (isAssigning || !selectedTecnicoId) ? '#475569' : '#fff',
+                cursor: (isAssigning || !selectedTecnicoId) ? 'not-allowed' : 'pointer',
+                transition: 'transform 140ms cubic-bezier(0.23, 1, 0.32, 1), background-color 150ms ease',
+              }}
             >
-              {isAssigning ? 'Asignando...' : 'Asignar órdenes en bloque'}
+              {isAssigning
+                ? 'Asignando...'
+                : `Asignar ${selectedOrdenes.length} ${selectedOrdenes.length === 1 ? 'orden' : 'órdenes'}`}
             </button>
+
+            <span aria-hidden="true" style={{ width: 1, height: 28, background: '#E3E9F4' }} />
+
             <button
-              className="bg-red-600 hover:bg-red-700 text-white px-6 py-2 rounded-md font-medium transition shadow-sm text-sm disabled:opacity-50 flex items-center gap-2"
+              type="button"
+              className="active:scale-[0.97]"
               onClick={() => handleDeleteOrdenes(selectedOrdenes)}
               disabled={isDeleting}
+              style={{
+                minHeight: 44, padding: '0 16px', display: 'flex', alignItems: 'center', gap: 8,
+                border: '1px solid #FECACA', borderRadius: 10, background: '#fff', color: '#B91C1C',
+                fontSize: 14, fontWeight: 500, cursor: isDeleting ? 'not-allowed' : 'pointer', opacity: isDeleting ? 0.6 : 1,
+                transition: 'transform 140ms cubic-bezier(0.23, 1, 0.32, 1), background-color 150ms ease',
+              }}
             >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
-              {isDeleting ? 'Eliminando...' : `Eliminar (${selectedOrdenes.length})`}
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+              </svg>
+              {isDeleting ? 'Eliminando...' : 'Eliminar'}
             </button>
           </div>
         </div>
@@ -1768,12 +2003,16 @@ export default function DespachoTableClient() {
           MODAL — Reporte de la Orden
          ══════════════════════════════════════════════════════════════════ */}
       {reporteOrden && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ backgroundColor: 'rgba(17,24,39,0.45)' }}>
+        <div className="reporte-overlay fixed inset-0 z-50 flex items-center justify-center" style={{ backgroundColor: 'rgba(17,24,39,0.45)' }}>
           <div
-            className="flex flex-col overflow-hidden shadow-2xl"
+            role="dialog"
+            aria-modal="true"
+            aria-label={`Reporte de la orden ${reporteOrden.orden_trabajo}`}
+            className="reporte-modal flex flex-col overflow-hidden"
             style={{
               backgroundColor: '#F7F9FC',
-              borderRadius: '12px',
+              borderRadius: '14px',
+              boxShadow: '0 24px 60px -12px rgba(15,42,92,0.28)',
               width: 'min(70vw, 1200px)',
               maxHeight: '90vh',
               fontFamily: 'Inter, system-ui, -apple-system, sans-serif',
@@ -1785,13 +2024,21 @@ export default function DespachoTableClient() {
               className="flex items-center justify-between shrink-0"
               style={{ padding: '16px 24px', borderBottom: '1px solid #E5E7EB', backgroundColor: '#fff' }}
             >
-              <h2 style={{ fontSize: '24px', fontWeight: 600, color: '#111827', margin: 0 }}>
-                Reporte de la Orden #{reporteOrden.orden_trabajo}
-              </h2>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: '6px 14px', flexWrap: 'wrap', minWidth: 0 }}>
+                <h2 style={{ fontSize: '20px', fontWeight: 600, color: '#0F2A5C', margin: 0, letterSpacing: '-0.01em' }}>
+                  Reporte de la orden <span style={{ fontVariantNumeric: 'tabular-nums' }}>#{reporteOrden.orden_trabajo}</span>
+                </h2>
+                {String(reporteOrden.solicitud ?? '').trim() !== '' && (
+                  <span style={{ fontSize: '13px', color: '#64748B', whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>
+                    Solicitud <span style={{ fontWeight: 600, color: '#0F2A5C' }}>{String(reporteOrden.solicitud).trim()}</span>
+                  </span>
+                )}
+              </div>
               <button
                 onClick={closeReporte}
+                aria-label="Cerrar reporte de la orden"
                 className="flex items-center justify-center transition-colors"
-                style={{ width: 32, height: 32, borderRadius: '8px', border: '1px solid #E5E7EB', background: '#fff', cursor: 'pointer', color: '#6B7280' }}
+                style={{ width: 44, height: 44, borderRadius: '10px', border: '1px solid #E3E9F4', background: '#fff', cursor: 'pointer', color: '#64748B' }}
                 onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.color = '#EF4444'; (e.currentTarget as HTMLButtonElement).style.borderColor = '#EF4444'; }}
                 onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.color = '#6B7280'; (e.currentTarget as HTMLButtonElement).style.borderColor = '#E5E7EB'; }}
               >
@@ -1803,101 +2050,162 @@ export default function DespachoTableClient() {
 
             {/* ── Cuerpo scrollable ── */}
             <div className="flex-1 overflow-y-auto" style={{ padding: '20px 24px' }}>
+              {/* ── Resumen de la orden (una sola superficie) ── */}
+              {(() => {
+                const dias = calcularDiasSLA(reporteOrden.fecha_asignacion_ot);
+                const colorSla = dias >= 3 ? '#DC2626' : dias === 2 ? '#EA580C' : '#16A34A';
+                const colorEstado =
+                  reporteOrden.estado === 'Programada' ? '#D97706'
+                  : reporteOrden.estado === 'Efectiva' ? '#16A34A'
+                  : reporteOrden.estado === 'Cancelada' ? '#DC2626'
+                  : '#2563EB';
+                const esProgramada = reporteOrden.estado === 'Programada';
+                const nombreUsuario = String(reporteOrden.nombre_usuario ?? '').trim();
+                const tecnico = getTecnicoNombre(reporteOrden.id_tecnico_asignado as string) || 'Sin asignar';
 
-              {/* ── FILA 1: Contrato · Ubicación (unificada) · SLA ── */}
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '20px', marginBottom: '12px' }}>
-                {/* Contrato */}
-                <div style={{ background: '#fff', borderRadius: '14px', padding: '16px', border: '1px solid #E8ECF3' }}>
-                  <p style={{ fontSize: '12px', fontWeight: 600, color: '#6B7280', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '4px' }}>Contrato</p>
-                  <p style={{ fontSize: '15px', fontWeight: 500, color: '#24324A', margin: 0 }}>{reporteOrden.contrato || '—'}</p>
-                </div>
+                const etiqueta: React.CSSProperties = { fontSize: '12px', color: '#64748B', margin: '0 0 3px' };
+                const valor: React.CSSProperties = { fontSize: '15px', fontWeight: 600, color: '#0F2A5C', margin: 0, lineHeight: 1.4, fontVariantNumeric: 'tabular-nums' };
+                const fila: React.CSSProperties = { padding: '14px 20px', borderTop: '1px solid #E3E9F4' };
+                const punto = (c: string) => (
+                  <span aria-hidden="true" style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: c, marginRight: 8 }} />
+                );
 
-                {/* Ubicación — unifica Dirección + Barrio + Localidad */}
-                <div style={{ background: '#fff', borderRadius: '14px', padding: '16px', border: '1px solid #E8ECF3' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px' }}>
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#6B7280" strokeWidth="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z"/><circle cx="12" cy="10" r="3"/></svg>
-                    <p style={{ fontSize: '12px', fontWeight: 600, color: '#6B7280', textTransform: 'uppercase', letterSpacing: '0.05em', margin: 0 }}>Dirección</p>
+                return (
+                  <div style={{ background: '#fff', border: '1px solid #E3E9F4', borderRadius: '12px', marginBottom: '14px', overflow: 'hidden' }}>
+                    {/* Fila 1: datos cortos (nunca se parten) */}
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '16px 24px', padding: '16px 20px' }}>
+                      <div>
+                        <p style={etiqueta}>Contrato</p>
+                        <p style={valor}>{reporteOrden.contrato || '—'}</p>
+                      </div>
+                      <div>
+                        <p style={etiqueta}>SLA</p>
+                        <p style={valor}>{punto(colorSla)}{dias} {dias === 1 ? 'día' : 'días'}</p>
+                      </div>
+                      <div>
+                        <p style={etiqueta}>Fecha de creación</p>
+                        <p style={{ ...valor, whiteSpace: 'nowrap' }}>
+                          {reporteOrden.fecha_asignacion_ot
+                            ? new Date(reporteOrden.fecha_asignacion_ot).toLocaleDateString('es-CO', { timeZone: 'America/Bogota' })
+                            : '—'}
+                        </p>
+                      </div>
+                      <div>
+                        <p style={etiqueta}>Estado</p>
+                        <p style={valor}>{punto(colorEstado)}{reporteOrden.estado}</p>
+                      </div>
+                      {esProgramada && (
+                        <div>
+                          <p style={etiqueta}>Fecha programada</p>
+                          <p style={{ ...valor, color: '#B45309', whiteSpace: 'nowrap' }}>{formatearFechaPura(reporteOrden.fecha_programada)}</p>
+                        </div>
+                      )}
+                      <div style={{ minWidth: 0 }}>
+                        <p style={etiqueta}>Técnico asignado</p>
+                        <p style={{ ...valor, overflowWrap: 'anywhere' }}>{tecnico}</p>
+                      </div>
+                    </div>
+
+                    {/* Fila 2: Dirección a todo el ancho (la única que puede crecer) */}
+                    <div style={fila}>
+                      <p style={etiqueta}>Dirección</p>
+                      <p style={{ ...valor, overflowWrap: 'anywhere' }}>{reporteOrden.direccion || '—'}</p>
+                      {(reporteOrden.barrio || reporteOrden.localidad) && (
+                        <p style={{ fontSize: '13px', color: '#64748B', margin: '2px 0 0', overflowWrap: 'anywhere' }}>
+                          {reporteOrden.barrio ? `Barrio ${formatBarrio(reporteOrden.barrio)}` : ''}{reporteOrden.barrio && reporteOrden.localidad ? ' · ' : ''}{reporteOrden.localidad || ''}
+                        </p>
+                      )}
+                    </div>
+
+                    {/* Fila 3: Nombre de usuario (solo si existe) */}
+                    {nombreUsuario && (
+                      <div style={fila}>
+                        <p style={etiqueta}>Nombre de usuario</p>
+                        <p style={{ ...valor, overflowWrap: 'anywhere' }}>{nombreUsuario}</p>
+                      </div>
+                    )}
+
+                    {/* Fila 4: Descripción del trabajo */}
+                    <div style={fila}>
+                      <p style={etiqueta}>Descripción del trabajo</p>
+                      <p style={{ fontSize: '14px', fontWeight: 500, color: '#24324A', margin: 0, lineHeight: 1.5, overflowWrap: 'anywhere' }}>
+                        {String(reporteOrden.descripcion_del_trabajo || '—')}
+                      </p>
+                    </div>
                   </div>
-                  <p style={{ fontSize: '15px', fontWeight: 500, color: '#24324A', margin: 0, lineHeight: 1.4 }}>{reporteOrden.direccion || '—'}</p>
-                  <p style={{ fontSize: '13px', color: '#6B7280', margin: '2px 0 0' }}>
-                    {reporteOrden.barrio ? `Barrio ${reporteOrden.barrio}` : ''}{reporteOrden.barrio && reporteOrden.localidad ? ' · ' : ''}{reporteOrden.localidad || ''}
+                );
+              })()}
+
+              {/* ── Aviso de orden doble / posible duplicada ── */}
+              {reporteOrden.alerta_orden ? (
+                <div
+                  style={{
+                    marginBottom: '12px', padding: '14px 16px', borderRadius: '14px',
+                    border: reporteOrden.alerta_orden === 'POSIBLE_DUPLICADA' ? '1px solid #FECACA' : '1px solid #FED7AA',
+                    background: reporteOrden.alerta_orden === 'POSIBLE_DUPLICADA' ? '#FEF2F2' : '#FFF7ED',
+                    color: reporteOrden.alerta_orden === 'POSIBLE_DUPLICADA' ? '#991B1B' : '#9A3412',
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '16px', flexWrap: 'wrap',
+                  }}
+                >
+                  <p style={{ margin: 0, fontSize: '13px', fontWeight: 600, lineHeight: 1.5 }}>
+                    {reporteOrden.alerta_orden === 'POSIBLE_DUPLICADA'
+                      ? `Posible duplicada: el contrato ${reporteOrden.contrato} tuvo la orden ${String(reporteOrden.orden_relacionada || '')} cerrada hace 2-3 semanas (tipo 12137, enmallamiento). Probablemente ya se atendió.`
+                      : `Orden doble: el contrato ${reporteOrden.contrato} ya tiene la orden ${String(reporteOrden.orden_relacionada || '')}.`}
                   </p>
+                  {reporteOrden.alerta_orden === 'POSIBLE_DUPLICADA' && (reporteOrden.estado === 'Pendiente' || reporteOrden.estado === 'Programada') && (
+                    <button
+                      type="button"
+                      onClick={handleCerrarConOrdenRelacionada}
+                      disabled={isGuardando}
+                      style={{
+                        padding: '8px 14px', borderRadius: '10px', border: 'none', cursor: isGuardando ? 'not-allowed' : 'pointer',
+                        background: '#16A34A', color: '#fff', fontSize: '13px', fontWeight: 700, opacity: isGuardando ? 0.6 : 1,
+                      }}
+                    >
+                      {`Cerrar con la orden ${String(reporteOrden.orden_relacionada || '')}`}
+                    </button>
+                  )}
                 </div>
+              ) : null}
 
-                {/* SLA */}
-                <div style={{ background: '#fff', borderRadius: '14px', padding: '16px', border: '1px solid #E8ECF3' }}>
-                  <p style={{ fontSize: '12px', fontWeight: 600, color: '#6B7280', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '6px' }}>SLA (días)</p>
-                  {(() => {
-                    const dias = calcularDiasSLA(reporteOrden.fecha_asignacion_ot);
-                    const slaStyle = dias >= 3
-                      ? { background: '#FEE2E2', color: '#991B1B' }
-                      : dias === 2
-                        ? { background: '#FFEDD5', color: '#9A3412' }
-                        : { background: '#DCFCE7', color: '#166534' };
-                    return (
-                      <span style={{ display: 'inline-block', padding: '3px 10px', borderRadius: '6px', fontSize: '12px', fontWeight: 700, ...slaStyle }}>
-                        {dias} {dias === 1 ? 'día' : 'días'}
-                      </span>
-                    );
-                  })()}
-                </div>
-              </div>
-
-              {/* ── FILA 2: Estado · Fecha de creación · Técnico asignado · Fecha programada (condicional) ── */}
-              <div style={{ display: 'grid', gridTemplateColumns: reporteOrden.estado === 'Programada' ? 'repeat(4, 1fr)' : 'repeat(3, 1fr)', gap: '20px', marginBottom: '12px' }}>
-                {/* Estado */}
-                <div style={{ background: '#fff', borderRadius: '14px', padding: '16px', border: '1px solid #E8ECF3' }}>
-                  <p style={{ fontSize: '12px', fontWeight: 600, color: '#6B7280', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '6px' }}>Estado</p>
-                  <span style={{
-                    display: 'inline-block', padding: '3px 10px', borderRadius: '9999px', fontSize: '12px', fontWeight: 700,
-                    ...(reporteOrden.estado === 'Programada'
-                      ? { background: '#FFF8E1', color: '#B45309' }
-                      : reporteOrden.estado === 'Efectiva'
-                        ? { background: '#DCFCE7', color: '#166534' }
-                        : reporteOrden.estado === 'Cancelada'
-                          ? { background: '#FEE2E2', color: '#991B1B' }
-                          : { background: '#DBEAFE', color: '#1E40AF' }
-                    ),
-                  }}>
-                    {reporteOrden.estado}
-                  </span>
-                </div>
-
-                {/* Fecha de creación */}
-                <div style={{ background: '#fff', borderRadius: '14px', padding: '16px', border: '1px solid #E8ECF3' }}>
-                  <p style={{ fontSize: '12px', fontWeight: 600, color: '#6B7280', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '4px' }}>Fecha de creación</p>
-                  <p style={{ fontSize: '15px', fontWeight: 500, color: '#24324A', margin: 0 }}>
-                    {reporteOrden.fecha_asignacion_ot
-                      ? new Date(reporteOrden.fecha_asignacion_ot).toLocaleDateString('es-CO', { timeZone: 'America/Bogota' })
-                      : '—'}
-                  </p>
-                </div>
-
-                {/* Técnico asignado */}
-                <div style={{ background: '#fff', borderRadius: '14px', padding: '16px', border: '1px solid #E8ECF3' }}>
-                  <p style={{ fontSize: '12px', fontWeight: 600, color: '#6B7280', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '4px' }}>Técnico asignado</p>
-                  <p style={{ fontSize: '15px', fontWeight: 500, color: '#24324A', margin: 0 }}>
-                    {getTecnicoNombre(reporteOrden.id_tecnico_asignado as string) || 'Sin asignar'}
-                  </p>
-                </div>
-
-                {/* Fecha programada (condicional) */}
-                {reporteOrden.estado === 'Programada' && (
-                  <div style={{ background: '#FFFBEB', borderRadius: '14px', padding: '16px', border: '1px solid #F59E0B' }}>
-                    <p style={{ fontSize: '12px', fontWeight: 600, color: '#B45309', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '4px' }}>Fecha programada</p>
-                    <p style={{ fontSize: '15px', fontWeight: 500, color: '#92400E', margin: 0 }}>
-                      {formatearFechaPura(reporteOrden.fecha_programada)}
-                    </p>
+              {/* ── Datos de la solicitud (solo los que tienen valor) ── */}
+              {(() => {
+                const campos = [
+                  { label: 'Actividad', valor: reporteOrden.actividad },
+                  { label: 'Teléfono', valor: reporteOrden.telefono },
+                  { label: 'Categoría', valor: reporteOrden.categoria },
+                  { label: 'Tipo de inmueble', valor: reporteOrden.tipo_inmueble },
+                  { label: 'Estado del producto', valor: reporteOrden.estado_producto },
+                  { label: 'Medidor', valor: reporteOrden.numero_medidor },
+                  { label: 'Marca del medidor', valor: reporteOrden.marca_medidor },
+                  { label: 'Hora acordada', valor: reporteOrden.hora_acordada },
+                  { label: 'Unidad operativa', valor: reporteOrden.unidad_operativa },
+                  { label: 'Plan comercial', valor: reporteOrden.plan_comercial },
+                ].filter(c => String(c.valor ?? '').trim() !== '');
+                const observacion = String(reporteOrden.observacion_solicitud ?? '').trim();
+                if (campos.length === 0 && !observacion) return null;
+                return (
+                  <div style={{ background: '#fff', border: '1px solid #E3E9F4', borderRadius: '12px', padding: '16px 20px', marginBottom: '14px' }}>
+                    <h2 style={{ fontSize: '14px', fontWeight: 600, color: '#0F2A5C', margin: '0 0 12px' }}>Datos de la solicitud</h2>
+                    {campos.length > 0 && (
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '14px 28px', marginBottom: observacion ? '16px' : 0 }}>
+                        {campos.map(c => (
+                          <div key={c.label} style={{ minWidth: 0 }}>
+                            <p style={{ fontSize: '12px', color: '#64748B', margin: '0 0 2px' }}>{c.label}</p>
+                            <p style={{ fontSize: '14px', fontWeight: 500, color: '#0F2A5C', margin: 0, lineHeight: 1.4, overflowWrap: 'anywhere', fontVariantNumeric: 'tabular-nums' }}>{String(c.valor)}</p>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {observacion && (
+                      <div>
+                        <p style={{ fontSize: '12px', color: '#64748B', margin: '0 0 6px' }}>Observación de la solicitud</p>
+                        <p style={{ fontSize: '14px', color: '#24324A', margin: 0, lineHeight: 1.55, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', borderLeft: '2px solid #CBD5E1', paddingLeft: '12px' }}>{observacion}</p>
+                      </div>
+                    )}
                   </div>
-                )}
-              </div>
-
-              {/* Descripción del trabajo — ancho completo */}
-              <div style={{ background: '#fff', borderRadius: '14px', padding: '16px', border: '1px solid #E8ECF3', marginBottom: '12px' }}>
-                <p style={{ fontSize: '12px', fontWeight: 600, color: '#6B7280', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '4px' }}>Descripción del trabajo</p>
-                <p style={{ fontSize: '15px', color: '#111827', margin: 0, lineHeight: 1.5 }}>{reporteOrden.descripcion_del_trabajo || '—'}</p>
-              </div>
-
+                );
+              })()}
 
 
               {/* ── Ítems ejecutados (solo para órdenes Efectiva con ítems) ── */}
@@ -2044,21 +2352,9 @@ export default function DespachoTableClient() {
 
 {/* Fotos (sin tarjeta de cuotas al lado) */}
 <div>
-    <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
-      <div style={{
-        width: 36, height: 36,
-        background: '#EEF2FF',
-        borderRadius: 10,
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-      }}>
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#1A3A6B" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/>
-        </svg>
-      </div>
-      <div>
-        <p style={{ margin: 0, fontWeight: 700, fontSize: 15, color: '#1A1A2E' }}>Fotos del trabajo</p>
-        <p style={{ margin: 0, fontSize: 12, color: '#9CA3AF' }}>Evidencias fotográficas registradas en la atención de la orden.</p>
-      </div>
+    <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap', margin: '6px 0 10px' }}>
+      <h2 style={{ margin: 0, fontSize: '14px', fontWeight: 600, color: '#0F2A5C' }}>Historial de la orden</h2>
+      <span style={{ fontSize: '12px', color: '#64748B' }}>Actualizaciones con sus observaciones y fotos</span>
     </div>
 
               {/* ══════════════════════════════════════════════════════════
@@ -2171,7 +2467,7 @@ export default function DespachoTableClient() {
                                   onClick={(e) => { e.stopPropagation(); copiarTextoHistorial(entry); }}
                                   style={{
                                     marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '4px',
-                                    padding: '4px 10px', background: '#fff', border: '1px solid #E6EAF2', borderRadius: '8px',
+                                    minHeight: 44, padding: '0 14px', background: '#fff', border: '1px solid #E3E9F4', borderRadius: '8px',
                                     cursor: 'pointer', fontSize: '12px', color: '#374151', fontWeight: 500,
                                   }}
                                 >
@@ -2183,7 +2479,7 @@ export default function DespachoTableClient() {
                                 <button
                                   onClick={(e) => { e.stopPropagation(); toggleExpand(); }}
                                   style={{
-                                    padding: '4px', background: 'none', border: 'none',
+                                    minWidth: 44, minHeight: 44, justifyContent: 'center', padding: '4px', background: 'none', border: 'none',
                                     cursor: 'pointer', color: '#9CA3AF', display: 'flex', alignItems: 'center',
                                     transition: 'color 0.15s',
                                   }}
@@ -2540,10 +2836,15 @@ export default function DespachoTableClient() {
               flexShrink: 0, borderTop: '1px solid #E5E7EB', padding: '14px 24px',
               background: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '10px',
             }}>
+              {!nuevoEstado && !isGuardando && (
+                <p style={{ margin: '0 auto 0 0', fontSize: '13px', color: '#64748B' }}>
+                  Selecciona un estado para poder guardar la actualización.
+                </p>
+              )}
               <button
                 onClick={closeReporte}
                 style={{
-                  padding: '10px 20px', fontSize: '14px', fontWeight: 500, color: '#374151',
+                  minHeight: 44, padding: '0 22px', fontSize: '14px', fontWeight: 500, color: '#0F2A5C',
                   background: '#fff', border: '1px solid #D1D5DB', borderRadius: '10px',
                   cursor: 'pointer', transition: 'background 0.15s',
                 }}
@@ -2556,11 +2857,11 @@ export default function DespachoTableClient() {
                 onClick={handleGuardarActualizacion}
                 disabled={isGuardando || !nuevoEstado}
                 style={{
-                  padding: '10px 24px', fontSize: '14px', fontWeight: 600, color: '#fff',
-                  background: (isGuardando || !nuevoEstado) ? '#93B3D6' : '#1A4D8F',
+                  minHeight: 44, padding: '0 24px', fontSize: '14px', fontWeight: 600, color: (isGuardando || !nuevoEstado) ? '#475569' : '#fff',
+                  background: (isGuardando || !nuevoEstado) ? '#CBD5E1' : '#1A4D8F',
                   border: 'none', borderRadius: '10px', cursor: (isGuardando || !nuevoEstado) ? 'not-allowed' : 'pointer',
                   transition: 'background 0.15s', display: 'flex', alignItems: 'center', gap: '8px',
-                  opacity: (isGuardando || !nuevoEstado) ? 0.65 : 1,
+                  opacity: 1,
                 }}
                 onMouseEnter={e => { if (!isGuardando && nuevoEstado) (e.currentTarget as HTMLButtonElement).style.background = '#153D72'; }}
                 onMouseLeave={e => { if (!isGuardando && nuevoEstado) (e.currentTarget as HTMLButtonElement).style.background = '#1A4D8F'; }}
