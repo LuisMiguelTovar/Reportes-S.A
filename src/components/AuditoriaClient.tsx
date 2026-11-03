@@ -8,6 +8,7 @@ import { supabase } from '@/lib/supabase';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
 import EquipoTrabajoEditor from '@/components/EquipoTrabajoEditor';
+import FiltroLista from '@/components/FiltroLista';
 import { useArea } from '@/components/AreaProvider';
 
 interface ItemReporte {
@@ -99,6 +100,8 @@ export default function AuditoriaClient() {
   const [totalCount, setTotalCount] = useState(0);
 
   const [tecnicos, setTecnicos] = useState<Tecnico[]>([]);
+  const tecnicosRef = useRef<Tecnico[]>([]);
+  tecnicosRef.current = tecnicos;
 
   // ── Estado para el menú kebab de acciones ──
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
@@ -289,6 +292,39 @@ export default function AuditoriaClient() {
     return t ? t.nombre : id;
   };
 
+  // ── Reporte de la orden: ayudas de presentación ──
+  const cerrarReporte = () => {
+    setReporteOrden(null);
+    setHistorialAuditoria([]);
+    setItemsReporte([]);
+    setCargandoItems(false);
+    setModoEdicionItems(false);
+    setItemsEditables([]);
+    setCuotasEditable('');
+  };
+  // "5232 - PUENTE DEL COMERCIO" → "Puente del Comercio"
+  const nombreBarrio = (b?: string) => {
+    const limpio = (b || '').replace(/^\s*\d+\s*-\s*/, '').trim();
+    if (!limpio) return '—';
+    return limpio
+      .toLowerCase()
+      .split(/\s+/)
+      .map((p, i) => (/^[ivx]+$/.test(p) ? p.toUpperCase() : i > 0 && ['de', 'del', 'y'].includes(p) ? p : p.charAt(0).toUpperCase() + p.slice(1)))
+      .join(' ');
+  };
+  // "Eduard silgado" → "Eduard Silgado"
+  const nombrePersona = (n?: string) =>
+    (n || '').toLowerCase().split(/\s+/).filter(Boolean).map(p => p.charAt(0).toUpperCase() + p.slice(1)).join(' ');
+  const rpt = {
+    etiqueta: { margin: '0 0 3px', fontSize: 12, color: '#64748B' } as React.CSSProperties,
+    valor: { margin: 0, fontSize: 15, fontWeight: 600, color: '#0F2A5C', overflowWrap: 'anywhere' } as React.CSSProperties,
+    tarjeta: { background: '#fff', border: '1px solid #E3E9F4', borderRadius: 12, flexShrink: 0 } as React.CSSProperties,
+    h2: { margin: 0, fontSize: 14, fontWeight: 600, color: '#0F2A5C' } as React.CSSProperties,
+    pista: { fontSize: 12, color: '#64748B' } as React.CSSProperties,
+    botonSecundario: { minHeight: 44, padding: '0 16px', borderRadius: 8, border: '1px solid #CBD5E1', background: '#fff', color: '#0F2A5C', fontSize: 13, fontWeight: 500, cursor: 'pointer' } as React.CSSProperties,
+    campo: { minHeight: 44, boxSizing: 'border-box', border: '1px solid #CBD5E1', borderRadius: 8, padding: '0 12px', fontSize: 14, color: '#0F2A5C', background: '#fff' } as React.CSSProperties,
+  };
+
   const tecnicosUnicos = useMemo(() => {
     return tecnicos.map(t => t.nombre).sort();
   }, [tecnicos]);
@@ -307,24 +343,24 @@ export default function AuditoriaClient() {
       query.eq('estado', estado);
     }
     if (tecnico !== 'Todos los Técnicos') {
-      const tecnicoObj = tecnicos.find(t => t.nombre === tecnico);
+      const tecnicoObj = tecnicosRef.current.find(t => t.nombre === tecnico);
       if (tecnicoObj) {
         query.eq('id_tecnico_asignado', tecnicoObj.id_usuario);
       }
     }
     if (desde) {
-      // fecha_cierre >= inicio del día seleccionado (en hora Colombia, aproximado con el campo tal cual está almacenado)
-      query.gte('fecha_cierre', `${desde}T00:00:00`);
+      // fecha_cierre >= inicio del día seleccionado (hora de Colombia exacta)
+      query.gte('fecha_cierre', `${desde}T00:00:00-05:00`);
     }
     if (hasta) {
-      query.lte('fecha_cierre', `${hasta}T23:59:59`);
+      query.lte('fecha_cierre', `${hasta}T23:59:59.999-05:00`);
     }
 
     query.order('fecha_cierre', { ascending: false, nullsFirst: false });
     query.order('orden_trabajo', { ascending: false }); // desempate: evita repetir/saltar filas al paginar
 
     return query;
-  }, [tecnicos, area]);
+  }, [area]);
 
   const fetchOrdenes = useCallback(async () => {
     setLoadingOrdenes(true);
@@ -786,6 +822,36 @@ export default function AuditoriaClient() {
     );
   }
 
+  // ── Filtros: atajos de fecha (hora de Colombia) ──
+  const hoyISO = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Bogota' });
+  const sumarDias = (iso: string, dias: number) => {
+    const d = new Date(`${iso}T00:00:00Z`);
+    d.setUTCDate(d.getUTCDate() + dias);
+    return d.toISOString().slice(0, 10);
+  };
+  const primerDiaMes = `${hoyISO.slice(0, 7)}-01`;
+  const ultimoDiaMesAnterior = sumarDias(primerDiaMes, -1);
+  const primerDiaMesAnterior = `${ultimoDiaMesAnterior.slice(0, 7)}-01`;
+  const atajosFecha = [
+    { id: 'hoy', texto: 'Hoy', desde: hoyISO, hasta: hoyISO },
+    { id: '7d', texto: 'Últimos 7 días', desde: sumarDias(hoyISO, -6), hasta: hoyISO },
+    { id: 'mes', texto: 'Este mes', desde: primerDiaMes, hasta: hoyISO },
+    { id: 'mesant', texto: 'Mes anterior', desde: primerDiaMesAnterior, hasta: ultimoDiaMesAnterior },
+  ];
+  const hayFiltros = !!searchTerm || !!startDate || !!endDate || tecnicoFilter !== 'Todos los Técnicos' || estadoFilter !== 'Todos los Estados';
+  const limpiarFiltros = () => {
+    setSearchTerm('');
+    setStartDate('');
+    setEndDate('');
+    setTecnicoFilter('Todos los Técnicos');
+    setEstadoFilter('Todos los Estados');
+  };
+  const estiloCampoFiltro: React.CSSProperties = {
+    boxSizing: 'border-box', width: '100%', minHeight: 44, padding: '0 12px', border: '1px solid #CBD5E1',
+    borderRadius: 8, background: '#fff', fontSize: 14, color: '#0F2A5C',
+  };
+  const estiloEtiquetaFiltro: React.CSSProperties = { display: 'block', margin: '0 0 6px', fontSize: 12, color: '#64748B' };
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between mb-6">
@@ -833,53 +899,97 @@ export default function AuditoriaClient() {
         </div>
       )}
 
-      <div className="flex flex-wrap gap-4 items-center mb-6">
-        <div className="relative flex-1 min-w-[280px] max-w-xl">
-          <svg className="w-5 h-5 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
-          <input
-            type="text"
-            placeholder="Buscar por Contrato o Nº Orden..."
-            className="w-full pl-10 pr-4 py-2.5 bg-white border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-sm text-gray-700"
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-          />
+      <section aria-label="Filtros" style={{ background: '#fff', border: '1px solid #E3E9F4', borderRadius: 12, padding: '18px 20px' }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, alignItems: 'flex-end' }}>
+          <div style={{ flex: '1 1 260px', minWidth: 260 }}>
+            <label htmlFor="aud-buscar" style={estiloEtiquetaFiltro}>Buscar</label>
+            <div style={{ position: 'relative' }}>
+              <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#64748B" strokeWidth="2" strokeLinecap="round" style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)' }}><circle cx="11" cy="11" r="7" /><path d="M20 20l-3.5-3.5" /></svg>
+              <input
+                id="aud-buscar"
+                type="text"
+                placeholder="Contrato o número de orden"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                style={{ ...estiloCampoFiltro, paddingLeft: 36 }}
+              />
+            </div>
+          </div>
+          <div style={{ width: 168 }}>
+            <label htmlFor="aud-desde" style={estiloEtiquetaFiltro}>Cerradas desde</label>
+            <input id="aud-desde" type="date" value={startDate} max={endDate || undefined} onChange={(e) => setStartDate(e.target.value)} style={{ ...estiloCampoFiltro, fontVariantNumeric: 'tabular-nums' }} />
+          </div>
+          <div style={{ width: 168 }}>
+            <label htmlFor="aud-hasta" style={estiloEtiquetaFiltro}>Cerradas hasta</label>
+            <input id="aud-hasta" type="date" value={endDate} min={startDate || undefined} onChange={(e) => setEndDate(e.target.value)} style={{ ...estiloCampoFiltro, fontVariantNumeric: 'tabular-nums' }} />
+          </div>
+          <div style={{ width: 200 }}>
+            <span style={estiloEtiquetaFiltro}>Técnico</span>
+            <FiltroLista
+              etiqueta="Técnico"
+              textoBoton="Todos"
+              value={tecnicoFilter}
+              ocupaTodo
+              valorVacio="Todos los Técnicos"
+              textoVacio="Todos los técnicos"
+              opciones={tecnicosUnicos.map(t => ({ value: t, label: t }))}
+              onChange={setTecnicoFilter}
+              buscable
+            />
+          </div>
+          <div style={{ width: 170 }}>
+            <span style={estiloEtiquetaFiltro}>Estado</span>
+            <FiltroLista
+              etiqueta="Estado"
+              textoBoton="Todos"
+              value={estadoFilter}
+              ocupaTodo
+              valorVacio="Todos los Estados"
+              textoVacio="Todos los estados"
+              opciones={[
+                { value: 'Efectiva', label: 'Efectiva' },
+                { value: 'Cancelada', label: 'Cancelada' },
+              ]}
+              onChange={setEstadoFilter}
+            />
+          </div>
         </div>
-        <div className="relative">
-          <input
-            type="date"
-            className="px-4 py-2.5 bg-white border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-sm text-gray-700 w-40"
-            value={startDate}
-            onChange={(e) => setStartDate(e.target.value)}
-          />
+
+        <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginTop: 14, paddingTop: 14, borderTop: '1px solid #EEF2F8' }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+            <span style={{ fontSize: 12, color: '#64748B', marginRight: 4 }}>Atajos</span>
+            {atajosFecha.map(a => {
+              const activo = startDate === a.desde && endDate === a.hasta;
+              return (
+                <button
+                  key={a.id}
+                  type="button"
+                  aria-pressed={activo}
+                  onClick={() => { setStartDate(a.desde); setEndDate(a.hasta); }}
+                  style={{
+                    minHeight: 44, padding: '0 14px', borderRadius: 8, fontSize: 13, fontWeight: 500, cursor: 'pointer',
+                    border: activo ? '1px solid #0F2A5C' : '1px solid #CBD5E1',
+                    background: activo ? '#0F2A5C' : '#fff',
+                    color: activo ? '#fff' : '#0F2A5C',
+                  }}
+                >
+                  {a.texto}
+                </button>
+              );
+            })}
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+            <p aria-live="polite" style={{ margin: 0, fontSize: 13, color: '#64748B', fontVariantNumeric: 'tabular-nums' }}>
+              <span style={{ color: '#0F2A5C', fontWeight: 600 }}>{totalCount}</span> {totalCount === 1 ? 'orden' : 'órdenes'}
+            </p>
+            {hayFiltros && (
+              <button type="button" onClick={limpiarFiltros} style={{ minHeight: 44, padding: '0 6px', border: 0, background: 'none', color: '#1D4ED8', fontSize: 13, fontWeight: 500, cursor: 'pointer' }}>
+                Limpiar filtros
+              </button>
+            )}
+          </div>
         </div>
-        <div className="relative">
-          <input
-            type="date"
-            className="px-4 py-2.5 bg-white border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-sm text-gray-700 w-40"
-            value={endDate}
-            onChange={(e) => setEndDate(e.target.value)}
-          />
-        </div>
-        <select
-          className="border border-gray-200 rounded-lg px-4 py-2.5 bg-white text-sm text-gray-700 shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 min-w-[200px]"
-          value={tecnicoFilter}
-          onChange={(e) => setTecnicoFilter(e.target.value)}
-        >
-          <option value="Todos los Técnicos">Todos los Técnicos</option>
-          {tecnicosUnicos.map(tech => (
-            <option key={tech} value={tech}>{tech}</option>
-          ))}
-        </select>
-        <select
-          className="border border-gray-200 rounded-lg px-4 py-2.5 bg-white text-sm text-gray-700 shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 min-w-[180px]"
-          value={estadoFilter}
-          onChange={(e) => setEstadoFilter(e.target.value)}
-        >
-          <option value="Todos los Estados">Todos los Estados</option>
-          <option value="Efectiva">Efectiva</option>
-          <option value="Cancelada">Cancelada</option>
-        </select>
-      </div>
+      </section>
 
       <div className={`bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden transition-opacity duration-150 ${loadingOrdenes && !isInitialLoad ? 'opacity-60 pointer-events-none' : 'opacity-100'}`}>
         <div className="w-full">
@@ -1080,374 +1190,281 @@ export default function AuditoriaClient() {
       </div>
 
       {reporteOrden && (
-        <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
+        <div className="reporte-overlay fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
           <div
-            className="bg-white rounded-2xl shadow-2xl flex flex-col overflow-hidden"
-            style={{ width: 'min(1100px, 92vw)', height: 'min(820px, 88vh)' }}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="reporte-titulo"
+            className="reporte-modal flex flex-col overflow-hidden"
+            style={{
+              width: 'min(1100px, 92vw)', height: 'min(860px, 90vh)', background: '#fff',
+              border: '1px solid #E3E9F4', borderRadius: 14, boxShadow: '0 24px 60px -12px rgba(15,42,92,0.28)',
+              fontFamily: 'inherit', color: '#0F2A5C',
+            }}
           >
-            {/* Header fijo */}
-            <div className="shrink-0 border-b border-gray-100">
-              <div className="flex items-center justify-between p-5 pb-3">
-                <h3 className="text-xl font-bold text-slate-800">Reporte de la Orden #{reporteOrden.orden_trabajo}</h3>
-                <button
-                  onClick={() => { setReporteOrden(null); setHistorialAuditoria([]); setItemsReporte([]); setCargandoItems(false); setModoEdicionItems(false); setItemsEditables([]); setCuotasEditable(''); }}
-                  className="text-gray-400 hover:bg-gray-100 hover:text-red-500 rounded-full p-1.5 transition-colors"
-                >
-                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
-                </button>
-              </div>
-              {/* Franja compacta de información, con separadores verticales */}
-              <div className="flex flex-wrap items-start gap-x-6 gap-y-2 px-5 pb-4 text-sm">
-                <div>
-                  <p className="text-[11px] text-gray-400 font-semibold uppercase tracking-wide">Contrato</p>
-                  <p className="text-gray-900 font-medium">{reporteOrden.contrato}</p>
-                </div>
-                <div className="w-px bg-gray-200 self-stretch" />
-                <div>
-                  <p className="text-[11px] text-gray-400 font-semibold uppercase tracking-wide">Dirección</p>
-                  <p className="text-gray-900 font-medium">{reporteOrden.direccion || '—'}</p>
-                </div>
-                <div className="w-px bg-gray-200 self-stretch" />
-                <div>
-                  <p className="text-[11px] text-gray-400 font-semibold uppercase tracking-wide">Barrio</p>
-                  <p className="text-gray-900 font-medium">{reporteOrden.barrio || '—'}</p>
-                </div>
-                <div className="w-px bg-gray-200 self-stretch" />
-                <div>
-                  <p className="text-[11px] text-gray-400 font-semibold uppercase tracking-wide">Técnico</p>
-                  <p className="text-gray-900 font-medium">{getTecnicoNombre(reporteOrden.id_tecnico_asignado)}</p>
-                </div>
-                <div className="w-px bg-gray-200 self-stretch" />
-                <div>
-                  <p className="text-[11px] text-gray-400 font-semibold uppercase tracking-wide">Estado</p>
-                  <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-semibold ${reporteOrden.estado === 'Cancelada' ? 'bg-red-50 text-red-700 border border-red-200' : 'bg-green-50 text-green-700 border border-green-200'}`}>
-                    {reporteOrden.estado}
-                  </span>
-                </div>
-                <div className="w-px bg-gray-200 self-stretch" />
-                <div>
-                  <p className="text-[11px] text-gray-400 font-semibold uppercase tracking-wide">Fecha de cierre</p>
-                  <p className="text-gray-900 font-medium">
-                    {reporteOrden.fecha_cierre ? new Date(reporteOrden.fecha_cierre).toLocaleString('es-CO', { timeZone: 'America/Bogota', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true }) : '—'}
-                  </p>
-                </div>
-              </div>
+            {/* Cabecera fija */}
+            <div className="shrink-0" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '16px 24px', background: '#fff', borderBottom: '1px solid #E3E9F4' }}>
+              <h2 id="reporte-titulo" style={{ margin: 0, fontSize: 20, fontWeight: 600, letterSpacing: '-0.01em', color: '#0F2A5C' }}>
+                Reporte de la orden <span style={{ fontVariantNumeric: 'tabular-nums' }}>#{reporteOrden.orden_trabajo}</span>
+              </h2>
+              <button
+                type="button"
+                onClick={cerrarReporte}
+                aria-label="Cerrar reporte de la orden"
+                style={{ width: 44, height: 44, borderRadius: 10, border: '1px solid #E3E9F4', background: '#fff', color: '#64748B', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M6 18L18 6M6 6l12 12" /></svg>
+              </button>
             </div>
 
-            {/* Cuerpo con scroll interno */}
-            <div className="flex-1 overflow-y-auto p-5 bg-gray-50">
+            {/* Cuerpo con scroll interno + degradado inferior */}
+            <div style={{ position: 'relative', flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+            <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '20px 24px 36px', background: '#F7F9FC', display: 'flex', flexDirection: 'column', gap: 16 }}>
 
-            {/* ── Ítems ejecutados (solo para órdenes Efectiva) ── */}
-            {reporteOrden.estado === 'Efectiva' && (
-              <div style={{
-                background: '#F8FAFF',
-                borderRadius: 12,
-                padding: '20px',
-                marginBottom: 20,
-              }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16, flexWrap: 'wrap', gap: 10 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                    <div style={{
-                      width: 36, height: 36,
-                      background: '#EEF2FF',
-                      borderRadius: 10,
-                      display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    }}>
-                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#1A3A6B" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
-                      </svg>
-                    </div>
-                    <div>
-                      <p style={{ margin: 0, fontWeight: 700, fontSize: 15, color: '#1A1A2E' }}>Ítems ejecutados</p>
-                      <p style={{ margin: 0, fontSize: 12, color: '#9CA3AF' }}>Servicios realizados por el técnico en la orden.</p>
-                    </div>
+              {/* Resumen de la orden */}
+              <div style={{ ...rpt.tarjeta, overflow: 'hidden' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '16px 24px', padding: '16px 20px' }}>
+                  <div>
+                    <p style={rpt.etiqueta}>Contrato</p>
+                    <p style={{ ...rpt.valor, fontVariantNumeric: 'tabular-nums' }}>{reporteOrden.contrato}</p>
                   </div>
-
-                  {!modoEdicionItems ? (
-                    <button
-                      type="button"
-                      onClick={() => setModoEdicionItems(true)}
-                      style={{
-                        display: 'flex', alignItems: 'center', gap: 6,
-                        padding: '8px 14px', borderRadius: 8, border: '1px solid #1A3A6B',
-                        background: 'white', color: '#1A3A6B', fontSize: 12, fontWeight: 700, cursor: 'pointer',
-                      }}
-                    >
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path strokeLinecap="round" strokeLinejoin="round" d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-                      Editar
-                    </button>
-                  ) : (
-                    <span style={{ fontSize: 11, fontWeight: 700, color: '#B45309', background: '#FFFBEB', border: '1px solid #FDE68A', padding: '4px 10px', borderRadius: 999 }}>
-                      Editando — recuerda dar &quot;Guardar cambios&quot;
-                    </span>
+                  <div>
+                    <p style={rpt.etiqueta}>Estado</p>
+                    <p style={rpt.valor}>
+                      <span aria-hidden="true" style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: reporteOrden.estado === 'Cancelada' ? '#DC2626' : '#16A34A', marginRight: 8 }} />
+                      {reporteOrden.estado}
+                    </p>
+                  </div>
+                  <div>
+                    <p style={rpt.etiqueta}>Fecha de cierre</p>
+                    <p style={{ ...rpt.valor, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>
+                      {reporteOrden.fecha_cierre ? new Date(reporteOrden.fecha_cierre).toLocaleString('es-CO', { timeZone: 'America/Bogota', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true }) : '—'}
+                    </p>
+                  </div>
+                  <div style={{ minWidth: 0 }}>
+                    <p style={rpt.etiqueta}>Técnico</p>
+                    <p style={rpt.valor}>{nombrePersona(getTecnicoNombre(reporteOrden.id_tecnico_asignado)) || '—'}</p>
+                  </div>
+                  {reporteOrden.estado === 'Efectiva' && (
+                    <div>
+                      <p style={rpt.etiqueta}>Cuotas</p>
+                      <p style={{ ...rpt.valor, fontVariantNumeric: 'tabular-nums' }}>{reporteOrden.numero_cuotas ?? '—'}</p>
+                    </div>
                   )}
                 </div>
+                <div style={{ padding: '14px 20px', borderTop: '1px solid #E3E9F4' }}>
+                  <p style={rpt.etiqueta}>Dirección</p>
+                  <p style={rpt.valor}>{reporteOrden.direccion || '—'}</p>
+                  <p style={{ margin: '2px 0 0', fontSize: 13, color: '#64748B' }}>Barrio {nombreBarrio(reporteOrden.barrio)}</p>
+                </div>
+              </div>
 
-                {/* Cuotas del servicio */}
-                <div style={{
-                  display: 'flex', alignItems: 'center', gap: 10,
-                  background: 'white', border: '1px solid #E8EDF5', borderRadius: 10,
-                  padding: '10px 14px', marginBottom: 14, maxWidth: 260,
-                }}>
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#1A3A6B" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <rect x="1" y="4" width="22" height="16" rx="2" ry="2"/><line x1="1" y1="10" x2="23" y2="10"/>
-                  </svg>
-                  <div style={{ flex: 1 }}>
-                    <p style={{ margin: 0, fontSize: 10, color: '#9CA3AF', fontWeight: 600 }}>Cuotas del servicio</p>
-                    {modoEdicionItems ? (
+              {/* Ítems ejecutados (solo órdenes Efectiva) */}
+              {reporteOrden.estado === 'Efectiva' && (
+                <section aria-labelledby="reporte-items" style={{ ...rpt.tarjeta, padding: '16px 20px 8px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', marginBottom: 8 }}>
+                    <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
+                      <h2 id="reporte-items" style={rpt.h2}>Ítems ejecutados</h2>
+                      <span style={rpt.pista}>Si el técnico legalizó algo mal desde la app, corrígelo con Editar ítems</span>
+                    </div>
+                    {!modoEdicionItems ? (
+                      <button type="button" onClick={() => setModoEdicionItems(true)} style={rpt.botonSecundario}>
+                        Editar ítems
+                      </button>
+                    ) : (
+                      <span style={{ fontSize: 12, fontWeight: 600, color: '#B45309' }}>
+                        <span aria-hidden="true" style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: '#D97706', marginRight: 8 }} />
+                        Editando — recuerda dar &quot;Guardar cambios&quot;
+                      </span>
+                    )}
+                  </div>
+
+                  {modoEdicionItems && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '4px 0 10px' }}>
+                      <label htmlFor="reporte-cuotas" style={{ fontSize: 13, color: '#64748B' }}>Cuotas del servicio</label>
                       <input
+                        id="reporte-cuotas"
                         type="number"
                         min={0}
                         value={cuotasEditable}
                         onChange={(e) => setCuotasEditable(e.target.value === '' ? '' : Number(e.target.value))}
-                        style={{ width: '100%', fontSize: 16, fontWeight: 800, color: '#1A3A6B', border: '1px solid #D1D5DB', borderRadius: 6, padding: '2px 6px', marginTop: 2 }}
+                        style={{ ...rpt.campo, width: 88, textAlign: 'center', fontVariantNumeric: 'tabular-nums' }}
                       />
-                    ) : (
-                      <p style={{ margin: '2px 0 0', fontSize: 18, fontWeight: 800, color: '#1A3A6B' }}>
-                        {reporteOrden.numero_cuotas ?? '—'}
-                      </p>
-                    )}
-                  </div>
+                    </div>
+                  )}
+
+                  {cargandoItems ? (
+                    <div style={{ textAlign: 'center', padding: 20, color: '#64748B', fontSize: 14 }}>Cargando ítems...</div>
+                  ) : (modoEdicionItems ? itemsEditables : itemsReporte).length === 0 ? (
+                    <div style={{ textAlign: 'center', padding: 16, color: '#64748B', fontSize: 13 }}>Sin ítems registrados.</div>
+                  ) : (
+                    <div style={{ overflowX: 'auto' }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14, fontVariantNumeric: 'tabular-nums' }}>
+                        <thead>
+                          <tr style={{ textAlign: 'left', color: '#64748B', fontSize: 12 }}>
+                            <th scope="col" style={{ padding: '8px 0', fontWeight: 500, borderBottom: '1px solid #E3E9F4' }}>Ítem</th>
+                            <th scope="col" style={{ padding: '8px 12px', fontWeight: 500, borderBottom: '1px solid #E3E9F4' }}>Código</th>
+                            <th scope="col" style={{ padding: '8px 12px', fontWeight: 500, textAlign: 'right', borderBottom: '1px solid #E3E9F4' }}>Cant.</th>
+                            <th scope="col" style={{ padding: '8px 12px', fontWeight: 500, textAlign: 'right', borderBottom: '1px solid #E3E9F4' }}>Valor</th>
+                            <th scope="col" style={{ padding: '8px 0 8px 12px', fontWeight: 500, textAlign: 'right', borderBottom: '1px solid #E3E9F4' }}>Subtotal</th>
+                            {modoEdicionItems && <th scope="col" style={{ width: 52, borderBottom: '1px solid #E3E9F4' }}><span className="sr-only">Quitar</span></th>}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(modoEdicionItems ? itemsEditables : itemsReporte).map((item, idx) => (
+                            <tr key={item.id ?? `nuevo-${idx}`}>
+                              <td style={{ padding: '12px 0', fontWeight: 600, borderBottom: '1px solid #EEF2F8', overflowWrap: 'anywhere' }}>{item.descripcion}</td>
+                              <td style={{ padding: 12, color: '#475569', borderBottom: '1px solid #EEF2F8' }}>{item.codigo}</td>
+                              <td style={{ padding: 12, textAlign: 'right', borderBottom: '1px solid #EEF2F8' }}>
+                                {modoEdicionItems ? (
+                                  <input
+                                    type="number"
+                                    min={1}
+                                    aria-label={`Cantidad de ${item.descripcion}`}
+                                    value={item.cantidad}
+                                    onChange={(e) => handleCambiarCantidadEditable(idx, Number(e.target.value))}
+                                    style={{ ...rpt.campo, width: 72, textAlign: 'center' }}
+                                  />
+                                ) : (
+                                  item.cantidad
+                                )}
+                              </td>
+                              <td style={{ padding: 12, textAlign: 'right', borderBottom: '1px solid #EEF2F8', whiteSpace: 'nowrap' }}>${item.precio_unitario.toLocaleString('es-CO')}</td>
+                              <td style={{ padding: '12px 0 12px 12px', textAlign: 'right', fontWeight: 600, borderBottom: '1px solid #EEF2F8', whiteSpace: 'nowrap' }}>
+                                ${(item.precio_unitario * item.cantidad).toLocaleString('es-CO')}
+                              </td>
+                              {modoEdicionItems && (
+                                <td style={{ padding: '6px 0 6px 8px', borderBottom: '1px solid #EEF2F8' }}>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleEliminarItemEditable(idx)}
+                                    aria-label={`Quitar ${item.descripcion}`}
+                                    title="Quitar ítem"
+                                    style={{ width: 44, height: 44, borderRadius: 8, border: '1px solid #FCA5A5', background: '#fff', color: '#B91C1C', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}
+                                  >
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                                  </button>
+                                </td>
+                              )}
+                            </tr>
+                          ))}
+                        </tbody>
+                        <tfoot>
+                          <tr>
+                            <td colSpan={4} style={{ padding: '14px 12px 14px 0', textAlign: 'right', color: '#64748B', fontSize: 13 }}>Total ejecutado</td>
+                            <td style={{ padding: '14px 0 14px 12px', textAlign: 'right', fontSize: 18, fontWeight: 700, whiteSpace: 'nowrap' }}>
+                              ${(modoEdicionItems
+                                ? totalEjecutadoEditable
+                                : itemsReporte.reduce((sum, it) => sum + it.subtotal, 0)
+                              ).toLocaleString('es-CO')}
+                            </td>
+                            {modoEdicionItems && <td />}
+                          </tr>
+                        </tfoot>
+                      </table>
+                    </div>
+                  )}
+
+                  {/* Agregar ítem del catálogo (solo en modo edición) */}
+                  {modoEdicionItems && !cargandoItems && (
+                    <div style={{ margin: '4px 0 12px', background: '#F7F9FC', border: '1px dashed #CBD5E1', borderRadius: 10, padding: 14 }}>
+                      <p style={{ margin: '0 0 8px', fontSize: 13, fontWeight: 600, color: '#0F2A5C' }}>Agregar ítem correcto</p>
+                      <div style={{ position: 'relative' }}>
+                        <input
+                          type="text"
+                          aria-label="Buscar ítem por código o descripción"
+                          placeholder="Buscar ítem por código o descripción..."
+                          value={itemCatalogoSeleccionado ? itemCatalogoSeleccionado.descripcion : busquedaCatalogo}
+                          onChange={(e) => { setBusquedaCatalogo(e.target.value); setItemCatalogoSeleccionado(null); }}
+                          style={{ ...rpt.campo, width: '100%' }}
+                        />
+                        {!itemCatalogoSeleccionado && busquedaCatalogo.trim() !== '' && catalogoFiltrado.length > 0 && (
+                          <div style={{ position: 'absolute', zIndex: 20, top: '100%', left: 0, right: 0, marginTop: 4, background: '#fff', border: '1px solid #E3E9F4', borderRadius: 10, boxShadow: '0 12px 28px -8px rgba(15,42,92,0.22)', maxHeight: 220, overflowY: 'auto' }}>
+                            {catalogoFiltrado.map((opt) => (
+                              <button
+                                key={opt.codigo}
+                                type="button"
+                                onClick={() => { setItemCatalogoSeleccionado(opt); setBusquedaCatalogo(''); }}
+                                style={{ display: 'block', width: '100%', textAlign: 'left', padding: '10px 12px', fontSize: 13, border: 'none', background: '#fff', cursor: 'pointer', borderBottom: '1px solid #EEF2F8' }}
+                                onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = '#F1F5FB'; }}
+                                onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = '#fff'; }}
+                              >
+                                <span style={{ fontWeight: 600, color: '#0F2A5C' }}>{opt.descripcion}</span>
+                                <span style={{ color: '#64748B' }}> — Cód. {opt.codigo} • ${opt.precio_unitario.toLocaleString('es-CO')}</span>
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 10 }}>
+                        <label htmlFor="reporte-cant-nuevo" style={{ fontSize: 13, color: '#64748B' }}>Cantidad</label>
+                        <input
+                          id="reporte-cant-nuevo"
+                          type="number"
+                          min={1}
+                          value={cantidadNuevoItem}
+                          onChange={(e) => setCantidadNuevoItem(Math.max(1, Number(e.target.value)))}
+                          style={{ ...rpt.campo, width: 80, textAlign: 'center' }}
+                        />
+                        <button
+                          type="button"
+                          disabled={!itemCatalogoSeleccionado}
+                          onClick={handleAgregarItemEditable}
+                          style={{
+                            marginLeft: 'auto', minHeight: 44, padding: '0 18px', borderRadius: 8, border: 0,
+                            background: itemCatalogoSeleccionado ? '#1D4ED8' : '#CBD5E1',
+                            color: itemCatalogoSeleccionado ? '#fff' : '#475569', fontSize: 14, fontWeight: 600,
+                            cursor: itemCatalogoSeleccionado ? 'pointer' : 'not-allowed',
+                          }}
+                        >
+                          Añadir ítem
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </section>
+              )}
+
+              {/* Historial de la orden */}
+              <section aria-labelledby="reporte-historial">
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap', margin: '2px 0 10px' }}>
+                  <h2 id="reporte-historial" style={rpt.h2}>Historial de la orden</h2>
+                  <span style={rpt.pista}>Comentarios y fotos registrados desde la app móvil</span>
                 </div>
 
-                {cargandoItems ? (
-                  <div style={{ textAlign: 'center', padding: '20px', color: '#9CA3AF', fontSize: 14 }}>
-                    Cargando ítems...
+                {loadingHistorialAuditoria ? (
+                  <div className="flex justify-center py-10">
+                    <svg className="animate-spin h-6 w-6 text-blue-500" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+                  </div>
+                ) : historialAuditoria.length === 0 ? (
+                  <div style={{ ...rpt.tarjeta, textAlign: 'center', padding: '28px 16px', color: '#64748B', fontSize: 14 }}>
+                    No hay actualizaciones registradas para esta orden.
                   </div>
                 ) : (
-                  <>
-                    {(modoEdicionItems ? itemsEditables : itemsReporte).length === 0 ? (
-                      <div style={{ textAlign: 'center', padding: '16px', color: '#9CA3AF', fontSize: 13 }}>
-                        Sin ítems registrados.
-                      </div>
-                    ) : (
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                        {(modoEdicionItems ? itemsEditables : itemsReporte).map((item, idx) => (
-                          <div key={item.id ?? `nuevo-${idx}`} style={{
-                            background: 'white',
-                            borderRadius: 10,
-                            padding: '14px 16px',
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: 14,
-                            border: '1px solid #E8EDF5',
-                          }}>
-                            <div style={{
-                              width: 36, height: 36,
-                              background: '#EEF2FF',
-                              borderRadius: 8,
-                              display: 'flex', alignItems: 'center', justifyContent: 'center',
-                              flexShrink: 0,
-                            }}>
-                              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#1A3A6B" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
-                              </svg>
-                            </div>
-                            <div style={{ flex: 1, minWidth: 0 }}>
-                              <p style={{ margin: 0, fontWeight: 700, fontSize: 14, color: '#1A1A2E' }}>{item.descripcion}</p>
-                              <p style={{ margin: '3px 0 0', fontSize: 12, color: '#1A3A6B', fontWeight: 500 }}>
-                                Cód. {item.codigo} • ${item.precio_unitario.toLocaleString('es-CO')}
-                              </p>
-                            </div>
-                            <div style={{
-                              background: '#F0F4FF',
-                              borderRadius: 8,
-                              padding: '8px 16px',
-                              textAlign: 'center',
-                              flexShrink: 0,
-                            }}>
-                              <p style={{ margin: 0, fontSize: 11, color: '#9CA3AF', fontWeight: 600 }}>Cantidad</p>
-                              {modoEdicionItems ? (
-                                <input
-                                  type="number"
-                                  min={1}
-                                  value={item.cantidad}
-                                  onChange={(e) => handleCambiarCantidadEditable(idx, Number(e.target.value))}
-                                  style={{ width: 56, textAlign: 'center', fontSize: 18, fontWeight: 800, color: '#1A3A6B', border: '1px solid #D1D5DB', borderRadius: 6, marginTop: 2 }}
-                                />
-                              ) : (
-                                <p style={{ margin: '2px 0 0', fontSize: 22, fontWeight: 800, color: '#1A3A6B' }}>{item.cantidad}</p>
-                              )}
-                            </div>
-                            <div style={{ textAlign: 'right', flexShrink: 0, minWidth: 90 }}>
-                              <p style={{ margin: 0, fontSize: 11, color: '#9CA3AF', fontWeight: 600 }}>Subtotal</p>
-                              <p style={{ margin: '2px 0 0', fontSize: 14, fontWeight: 800, color: '#1A1A2E' }}>
-                                ${(item.precio_unitario * item.cantidad).toLocaleString('es-CO')}
-                              </p>
-                            </div>
-                            {modoEdicionItems && (
-                              <button
-                                type="button"
-                                onClick={() => handleEliminarItemEditable(idx)}
-                                title="Eliminar ítem"
-                                style={{
-                                  flexShrink: 0, width: 32, height: 32, borderRadius: 8,
-                                  border: '1px solid #FCA5A5', background: '#FEF2F2', color: '#DC2626',
-                                  display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
-                                }}
-                              >
-                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
-                              </button>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    )}
+                  <div className="relative pl-6">
+                    <div className="absolute left-[7px] top-2 bottom-2" style={{ width: 2, background: '#E3E9F4' }} />
+                    <div className="flex flex-col gap-3">
+                      {historialAuditoria.map((h: any, i: number) => {
+                        const colorPunto = h.estado === 'Efectiva' ? '#16A34A' : h.estado === 'Programada' ? '#F59E0B' : (h.estado === 'Cancelada' || h.estado === 'Incumplida') ? '#DC2626' : '#2563EB';
+                        const badgeLabel = h.estado === 'Cancelada' ? 'Incumplida' : h.estado;
+                        const fotos: string[] = h.fotos || [];
+                        const textoEntrada = construirTextoEntrada(h);
 
-                    {/* Agregar ítem del catálogo (solo en modo edición) */}
-                    {modoEdicionItems && (
-                      <div style={{ marginTop: 14, background: 'white', border: '1px dashed #C7D2FE', borderRadius: 10, padding: 14 }}>
-                        <p style={{ margin: '0 0 8px', fontSize: 12, fontWeight: 700, color: '#1A3A6B' }}>Agregar ítem correcto</p>
-                        <div style={{ position: 'relative' }}>
-                          <input
-                            type="text"
-                            placeholder="Buscar ítem por código o descripción..."
-                            value={itemCatalogoSeleccionado ? itemCatalogoSeleccionado.descripcion : busquedaCatalogo}
-                            onChange={(e) => { setBusquedaCatalogo(e.target.value); setItemCatalogoSeleccionado(null); }}
-                            style={{ width: '100%', padding: '8px 10px', border: '1px solid #D1D5DB', borderRadius: 8, fontSize: 13 }}
-                          />
-                          {!itemCatalogoSeleccionado && busquedaCatalogo.trim() !== '' && catalogoFiltrado.length > 0 && (
-                            <div style={{ position: 'absolute', zIndex: 20, top: '100%', left: 0, right: 0, marginTop: 4, background: 'white', border: '1px solid #E5E7EB', borderRadius: 8, boxShadow: '0 4px 12px rgba(0,0,0,0.08)', maxHeight: 220, overflowY: 'auto' }}>
-                              {catalogoFiltrado.map((opt) => (
-                                <button
-                                  key={opt.codigo}
-                                  type="button"
-                                  onClick={() => { setItemCatalogoSeleccionado(opt); setBusquedaCatalogo(''); }}
-                                  style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 10px', fontSize: 12, border: 'none', background: 'white', cursor: 'pointer', borderBottom: '1px solid #F3F4F6' }}
-                                  onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = '#F8FAFF'; }}
-                                  onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'white'; }}
-                                >
-                                  <span style={{ fontWeight: 700, color: '#1A1A2E' }}>{opt.descripcion}</span>
-                                  <span style={{ color: '#9CA3AF' }}> — Cód. {opt.codigo} • ${opt.precio_unitario.toLocaleString('es-CO')}</span>
-                                </button>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 10 }}>
-                          <label style={{ fontSize: 12, color: '#6B7280', fontWeight: 600 }}>Cantidad</label>
-                          <input
-                            type="number"
-                            min={1}
-                            value={cantidadNuevoItem}
-                            onChange={(e) => setCantidadNuevoItem(Math.max(1, Number(e.target.value)))}
-                            style={{ width: 64, padding: '6px 8px', border: '1px solid #D1D5DB', borderRadius: 6, fontSize: 13 }}
-                          />
-                          <button
-                            type="button"
-                            disabled={!itemCatalogoSeleccionado}
-                            onClick={handleAgregarItemEditable}
-                            style={{
-                              marginLeft: 'auto', padding: '8px 16px', borderRadius: 8, border: 'none',
-                              background: itemCatalogoSeleccionado ? '#1A4D8F' : '#93B3D6',
-                              color: 'white', fontSize: 12, fontWeight: 700,
-                              cursor: itemCatalogoSeleccionado ? 'pointer' : 'not-allowed',
-                            }}
-                          >
-                            Añadir ítem
-                          </button>
-                        </div>
-                      </div>
-                    )}
+                        return (
+                          <div key={i} className="relative">
+                            <span aria-hidden="true" className="absolute -left-[19px] top-5" style={{ width: 12, height: 12, borderRadius: '50%', background: colorPunto, display: 'block' }} />
 
-                    {/* Total ejecutado — al final de la lista, como subtotal general */}
-                    {(modoEdicionItems ? itemsEditables : itemsReporte).length > 0 && (
-                      <div style={{
-                        marginTop: 14, display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 10,
-                        borderTop: '2px solid #E5E7EB', paddingTop: 12,
-                      }}>
-                        <span style={{ fontSize: 13, fontWeight: 700, color: '#6B7280' }}>Total ejecutado</span>
-                        <span style={{ fontSize: 20, fontWeight: 800, color: '#1A3A6B' }}>
-                          ${(modoEdicionItems
-                            ? totalEjecutadoEditable
-                            : itemsReporte.reduce((sum, it) => sum + it.subtotal, 0)
-                          ).toLocaleString('es-CO')}
-                        </span>
-                      </div>
-                    )}
-                  </>
-                )}
-              </div>
-            )}
-
-{/* Fotos (sin tarjeta de cuotas al lado) */}
-<div>
-    <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
-      <div style={{
-        width: 36, height: 36,
-        background: '#EEF2FF',
-        borderRadius: 10,
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-      }}>
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#1A3A6B" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/>
-        </svg>
-      </div>
-      <div>
-        <p style={{ margin: 0, fontWeight: 700, fontSize: 15, color: '#1A1A2E' }}>Fotos del trabajo</p>
-        <p style={{ margin: 0, fontSize: 12, color: '#9CA3AF' }}>Evidencias fotográficas registradas en la atención de la orden.</p>
-      </div>
-    </div>
-
-              {loadingHistorialAuditoria ? (
-                <div className="flex justify-center py-10">
-                  <svg className="animate-spin h-6 w-6 text-blue-500" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
-                </div>
-              ) : historialAuditoria.length === 0 ? (
-                <div className="text-center py-10 text-gray-400 text-sm bg-white rounded-xl border border-gray-100">
-                  No hay actualizaciones registradas para esta orden.
-                </div>
-              ) : (
-                <div className="relative pl-6">
-                  {/* Línea vertical del timeline */}
-                  <div className="absolute left-[7px] top-2 bottom-2 w-px bg-gray-200" />
-
-                  <div className="flex flex-col gap-3">
-                    {historialAuditoria.map((h: any, i: number) => {
-                      const colorPorEstado = (estado: string) => {
-                        if (estado === 'Efectiva') return { dot: 'bg-green-500', ring: 'ring-green-100', badgeBg: 'bg-green-50', badgeText: 'text-green-700', badgeBorder: 'border-green-200' };
-                        if (estado === 'Programada') return { dot: 'bg-amber-500', ring: 'ring-amber-100', badgeBg: 'bg-amber-50', badgeText: 'text-amber-700', badgeBorder: 'border-amber-200' };
-                        if (estado === 'Cancelada' || estado === 'Incumplida') return { dot: 'bg-red-500', ring: 'ring-red-100', badgeBg: 'bg-red-50', badgeText: 'text-red-700', badgeBorder: 'border-red-200' };
-                        return { dot: 'bg-blue-500', ring: 'ring-blue-100', badgeBg: 'bg-blue-50', badgeText: 'text-blue-700', badgeBorder: 'border-blue-200' };
-                      };
-                      const colores = colorPorEstado(h.estado);
-                      const badgeLabel = h.estado === 'Cancelada' ? 'Incumplida' : h.estado;
-                      const fotos: string[] = h.fotos || [];
-
-                      return (
-                        <div key={i} className="relative">
-                          {/* Punto del timeline */}
-                          <div className={`absolute -left-[19px] top-4 w-3 h-3 rounded-full ${colores.dot} ring-4 ${colores.ring}`} />
-
-                          <div className="bg-white rounded-[10px] border border-gray-100 p-4">
-                            <div className="flex flex-wrap items-center gap-2 mb-2">
-                              <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-semibold border ${colores.badgeBg} ${colores.badgeText} ${colores.badgeBorder}`}>
-                                {badgeLabel}
-                              </span>
-                              <span className="text-xs text-gray-400">
-                                {new Date(h.fecha).toLocaleString('es-CO', { timeZone: 'America/Bogota', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true })}
-                              </span>
-                              <span className="text-xs text-gray-600">
-                                {h.autor_nombre || h.usuario}
-                                {h.autor_rol && <span className="text-gray-400"> · {h.autor_rol}</span>}
-                              </span>
-                            </div>
-
-                            {/* Comentario — con prefijo fecha+causal+técnico dentro del mismo párrafo,
-                                para que al copiar el texto quede autocontenido. El comentario original
-                                NO se modifica, solo se le antepone este encabezado dentro del párrafo. */}
-                            {(() => {
-                              const textoEntrada = construirTextoEntrada(h);
-                              if (!textoEntrada) {
-                                return (
-                                  <p className="text-xs text-gray-400 italic mb-3">No se registró comentario para esta actualización.</p>
-                                );
-                              }
-                              return (
-                                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginBottom: 12 }}>
-                                  <p className="text-sm text-gray-800" style={{ whiteSpace: 'pre-wrap', flex: 1, margin: 0 }}>
-                                    {textoEntrada}
-                                  </p>
+                            <div style={{ ...rpt.tarjeta, padding: '14px 18px' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 10 }}>
+                                <p style={{ margin: 0, fontSize: 13, color: '#64748B', fontVariantNumeric: 'tabular-nums' }}>
+                                  <span style={{ fontWeight: 600, color: '#0F2A5C' }}>{badgeLabel}</span>
+                                  {' · '}
+                                  {new Date(h.fecha).toLocaleString('es-CO', { timeZone: 'America/Bogota', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true })}
+                                  {' · '}
+                                  {nombrePersona(h.autor_nombre || h.usuario)}
+                                  {h.autor_rol && <> ({h.autor_rol})</>}
+                                </p>
+                                {textoEntrada && (
                                   <button
                                     type="button"
                                     onClick={() => {
@@ -1455,205 +1472,109 @@ export default function AuditoriaClient() {
                                       setEntradaCopiadaIndex(i);
                                       setTimeout(() => setEntradaCopiadaIndex((prev) => (prev === i ? null : prev)), 1800);
                                     }}
-                                    title="Copiar"
                                     style={{
-                                      flexShrink: 0, display: 'flex', alignItems: 'center', gap: 4,
-                                      padding: '4px 10px',
-                                      background: entradaCopiadaIndex === i ? '#DCFCE7' : '#fff',
-                                      border: entradaCopiadaIndex === i ? '1px solid #22C55E' : '1px solid #E6EAF2',
-                                      borderRadius: 8,
-                                      cursor: 'pointer', fontSize: 12,
-                                      color: entradaCopiadaIndex === i ? '#166534' : '#374151',
-                                      fontWeight: 500,
-                                      transition: 'background 0.15s, border-color 0.15s, color 0.15s',
+                                      ...rpt.botonSecundario, flexShrink: 0, padding: '0 14px',
+                                      borderColor: entradaCopiadaIndex === i ? '#16A34A' : '#E3E9F4',
+                                      background: entradaCopiadaIndex === i ? '#F0FDF4' : '#fff',
+                                      color: entradaCopiadaIndex === i ? '#166534' : '#0F2A5C',
                                     }}
                                   >
-                                    {entradaCopiadaIndex === i ? (
-                                      <>
-                                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                                          <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                                        </svg>
-                                        ¡Copiado!
-                                      </>
-                                    ) : (
-                                      <>
-                                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                          <rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
-                                        </svg>
-                                        Copiar
-                                      </>
-                                    )}
+                                    {entradaCopiadaIndex === i ? '¡Copiado!' : 'Copiar'}
                                   </button>
-                                </div>
-                              );
-                            })()}
-
-                            {/* Equipo de trabajo (solo si existe) */}
-                            {h.equipo_trabajo && h.equipo_trabajo.length > 0 && (
-                              <div style={{
-                                marginBottom: '12px',
-                                padding: '10px 14px',
-                                background: '#EEF2FF',
-                                borderRadius: '10px',
-                              }}>
-                                <p style={{
-                                  margin: '0 0 8px',
-                                  fontSize: '12px',
-                                  fontWeight: 700,
-                                  color: '#1A3A6B',
-                                  textTransform: 'uppercase',
-                                  letterSpacing: '0.05em',
-                                }}>
-                                  Equipo de trabajo
-                                </p>
-                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
-                                  {h.equipo_trabajo.map((miembro: string, idx: number) => (
-                                    <span key={idx} style={{
-                                      display: 'inline-flex',
-                                      alignItems: 'center',
-                                      gap: '4px',
-                                      padding: '3px 10px',
-                                      background: 'white',
-                                      borderRadius: '9999px',
-                                      fontSize: '12px',
-                                      fontWeight: 600,
-                                      color: '#1A3A6B',
-                                      border: '1px solid #C7D7F5',
-                                    }}>
-                                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#1A3A6B" strokeWidth="2.5">
-                                        <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
-                                        <circle cx="12" cy="7" r="4"/>
-                                      </svg>
-                                      {miembro}
-                                    </span>
-                                  ))}
-                                </div>
+                                )}
                               </div>
-                            )}
 
-                            {/* Fotos de ESTA actualización únicamente */}
-                            {fotos.length > 0 ? (
-                              <div>
-                                <p className="text-xs text-gray-500 font-medium mb-1.5">Evidencias ({fotos.length})</p>
-                                <div className="grid grid-cols-3 gap-2" style={{ maxWidth: '480px' }}>
-                                  {fotos.map((url, fotoIdx) => (
-                                    <div
-                                      key={fotoIdx}
-                                      className="relative group cursor-pointer"
-                                      onClick={() => setLightbox({ fotos, index: fotoIdx })}
-                                    >
-                                      <img
-                                        src={url}
-                                        alt={`Evidencia ${fotoIdx + 1}`}
-                                        className="rounded-lg object-cover w-full"
-                                        style={{ height: '105px' }}
-                                      />
-                                      <div className="absolute inset-0 rounded-lg bg-black/0 group-hover:bg-black/20 transition-colors flex items-center justify-center">
-                                        <svg className="w-5 h-5 text-white opacity-0 group-hover:opacity-100 transition-opacity" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-5v4m0-4h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" /></svg>
-                                      </div>
-                                    </div>
-                                  ))}
+                              {textoEntrada ? (
+                                <p style={{ margin: 0, fontSize: 14, lineHeight: 1.6, color: '#24324A', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{textoEntrada}</p>
+                              ) : (
+                                <p style={{ margin: 0, fontSize: 13, color: '#64748B', fontStyle: 'italic' }}>No se registró comentario para esta actualización.</p>
+                              )}
+
+                              {h.equipo_trabajo && h.equipo_trabajo.length > 0 && (
+                                <div style={{ marginTop: 12 }}>
+                                  <p style={{ margin: '0 0 6px', fontSize: 12, color: '#64748B' }}>Equipo de trabajo</p>
+                                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                                    {h.equipo_trabajo.map((miembro: string, idx: number) => (
+                                      <span key={idx} style={{ padding: '4px 10px', background: '#F7F9FC', border: '1px solid #E3E9F4', borderRadius: 8, fontSize: 13, fontWeight: 500, color: '#0F2A5C' }}>
+                                        {nombrePersona(miembro)}
+                                      </span>
+                                    ))}
+                                  </div>
                                 </div>
-                              </div>
-                            ) : (
-                              <p className="text-xs text-gray-400">Sin evidencias fotográficas.</p>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
+                              )}
 
-              {/* Fotos desde urls_fotos como respaldo cuando el historial no tiene fotos */}
-              {(() => {
-                // Verificar si el historial ya tiene alguna entrada con fotos
-                const historialTieneFoots = historialAuditoria.some(
-                  (h: any) => h.fotos && h.fotos.length > 0
-                );
-                
-                // Solo mostrar este bloque si:
-                // 1. El historial NO tiene fotos (app antigua), Y
-                // 2. La orden SÍ tiene urls_fotos
-                const urlsFotos: string[] = reporteOrden.urls_fotos || [];
-                
-                if (historialTieneFoots || urlsFotos.length === 0) return null;
-                
-                return (
-                  <div className="mt-4">
-                    <p className="text-xs text-gray-500 font-medium mb-2">
-                      Evidencias ({urlsFotos.length})
-                    </p>
-                    <div className="grid grid-cols-3 gap-2" style={{ maxWidth: '480px' }}>
-                      {urlsFotos.map((url: string, fotoIdx: number) => (
-                        <div
-                          key={fotoIdx}
-                          className="relative group cursor-pointer"
-                          onClick={() => setLightbox({ fotos: urlsFotos, index: fotoIdx })}
-                        >
-                          <img
-                            src={url}
-                            alt={`Evidencia ${fotoIdx + 1}`}
-                            className="rounded-lg object-cover w-full"
-                            style={{ height: '105px' }}
-                          />
-                          <div className="absolute inset-0 rounded-lg bg-black/0 group-hover:bg-black/20 transition-colors flex items-center justify-center">
-                            <svg className="w-5 h-5 text-white opacity-0 group-hover:opacity-100 transition-opacity" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-5v4m0-4h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
-                            </svg>
+                              {fotos.length > 0 ? (
+                                <div style={{ marginTop: 14 }}>
+                                  <p style={{ margin: '0 0 8px', fontSize: 12, color: '#64748B' }}>Fotos ({fotos.length})</p>
+                                  <div className="grid grid-cols-3 gap-2" style={{ maxWidth: 480 }}>
+                                    {fotos.map((url, fotoIdx) => (
+                                      <button
+                                        key={fotoIdx}
+                                        type="button"
+                                        aria-label={`Ampliar foto ${fotoIdx + 1} de ${fotos.length}`}
+                                        onClick={() => setLightbox({ fotos, index: fotoIdx })}
+                                        style={{ display: 'block', padding: 0, border: '1px solid #E3E9F4', borderRadius: 8, overflow: 'hidden', cursor: 'zoom-in', background: '#F1F5F9', height: 105 }}
+                                      >
+                                        <img src={url} alt={`Evidencia ${fotoIdx + 1}`} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+                                      </button>
+                                    ))}
+                                  </div>
+                                </div>
+                              ) : (
+                                <p style={{ margin: '12px 0 0', fontSize: 13, color: '#64748B' }}>Sin fotos en esta actualización.</p>
+                              )}
+                            </div>
                           </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </div>
-                );
-              })()}
+                )}
 
-            {/* ── Editor de equipo de trabajo (solo para órdenes Efectiva) ── */}
-            {reporteOrden.estado === 'Efectiva' && (
-              <div className="mt-4 mb-4">
+                {/* Fotos desde urls_fotos como respaldo cuando el historial no tiene fotos */}
+                {(() => {
+                  const historialTieneFotos = historialAuditoria.some((h: any) => h.fotos && h.fotos.length > 0);
+                  const urlsFotos: string[] = reporteOrden.urls_fotos || [];
+                  if (historialTieneFotos || urlsFotos.length === 0) return null;
+                  return (
+                    <div style={{ ...rpt.tarjeta, padding: '14px 18px', marginTop: 12 }}>
+                      <p style={{ margin: '0 0 8px', fontSize: 12, color: '#64748B' }}>Fotos ({urlsFotos.length})</p>
+                      <div className="grid grid-cols-3 gap-2" style={{ maxWidth: 480 }}>
+                        {urlsFotos.map((url: string, fotoIdx: number) => (
+                          <button
+                            key={fotoIdx}
+                            type="button"
+                            aria-label={`Ampliar foto ${fotoIdx + 1} de ${urlsFotos.length}`}
+                            onClick={() => setLightbox({ fotos: urlsFotos, index: fotoIdx })}
+                            style={{ display: 'block', padding: 0, border: '1px solid #E3E9F4', borderRadius: 8, overflow: 'hidden', cursor: 'zoom-in', background: '#F1F5F9', height: 105 }}
+                          >
+                            <img src={url} alt={`Evidencia ${fotoIdx + 1}`} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })()}
+              </section>
+
+              {/* Editor de equipo de trabajo (solo órdenes Efectiva) — sin cambios */}
+              {reporteOrden.estado === 'Efectiva' && (
                 <EquipoTrabajoEditor
                   ordenTrabajo={reporteOrden.orden_trabajo}
                   onSaved={() => {
                     fetchHistorialAuditoria(reporteOrden.orden_trabajo);
                   }}
                 />
-              </div>
-            )}
-
-              {/* Caja informativa */}
-              <div className="bg-blue-50 border border-blue-100 rounded-xl p-3 text-xs text-blue-700 mt-4">
-                ℹ️ Los comentarios y evidencias fueron registrados desde la aplicación móvil durante la atención de la orden.
-              </div>
-  </div> {/* Fin columna de fotos */}
-
-            {/* Nota informativa */}
-            {reporteOrden.estado === 'Efectiva' && itemsReporte.length > 0 && !modoEdicionItems && (
-              <div style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 10,
-                padding: '12px 16px',
-                background: '#F0F4FF',
-                borderRadius: 10,
-                marginTop: 16,
-              }}>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#1A3A6B" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
-                </svg>
-                <p style={{ margin: 0, fontSize: 12, color: '#1A3A6B' }}>
-                  Usa el botón &quot;Editar&quot; de la sección de ítems para corregir cuotas, cantidades o ítems si el técnico legalizó algo mal desde la app.
-                </p>
-              </div>
-            )}
-
+              )}
+            </div>
+            <div aria-hidden="true" style={{ position: 'absolute', left: 0, right: 14, bottom: 0, height: 28, background: 'linear-gradient(to bottom, rgba(247,249,252,0), #F7F9FC)', pointerEvents: 'none' }} />
             </div>
 
-            {/* Footer fijo */}
-            <div className="shrink-0 flex justify-end items-center gap-3 p-4 border-t border-gray-100 bg-white">
+            {/* Pie fijo */}
+            <div className="shrink-0" style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 12, padding: '14px 24px', background: '#fff', borderTop: '1px solid #E3E9F4' }}>
               {modoEdicionItems && (
                 <button
+                  type="button"
                   onClick={() => {
                     setModoEdicionItems(false);
                     setItemsEditables(
@@ -1668,23 +1589,27 @@ export default function AuditoriaClient() {
                     setCuotasEditable(reporteOrden.numero_cuotas ?? '');
                   }}
                   disabled={isGuardandoEdicion}
-                  className="px-5 py-2 border border-gray-300 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+                  style={{ ...rpt.botonSecundario, fontSize: 14, borderRadius: 10, opacity: isGuardandoEdicion ? 0.5 : 1 }}
                 >
                   Cancelar edición
                 </button>
               )}
               <button
-                onClick={() => { setReporteOrden(null); setHistorialAuditoria([]); setItemsReporte([]); setCargandoItems(false); setModoEdicionItems(false); setItemsEditables([]); setCuotasEditable(''); }}
+                type="button"
+                onClick={cerrarReporte}
                 disabled={isGuardandoEdicion}
-                className="px-5 py-2 border border-gray-300 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+                style={modoEdicionItems
+                  ? { ...rpt.botonSecundario, fontSize: 14, borderRadius: 10, opacity: isGuardandoEdicion ? 0.5 : 1 }
+                  : { minHeight: 44, padding: '0 22px', borderRadius: 10, border: 0, background: '#1D4ED8', color: '#fff', fontSize: 14, fontWeight: 600, cursor: 'pointer' }}
               >
                 Cerrar
               </button>
               {modoEdicionItems && (
                 <button
+                  type="button"
                   onClick={handleGuardarEdicionItems}
                   disabled={isGuardandoEdicion}
-                  className="px-5 py-2 rounded-lg text-sm font-semibold text-white bg-blue-700 hover:bg-blue-800 disabled:opacity-60 flex items-center gap-2"
+                  style={{ minHeight: 44, padding: '0 22px', borderRadius: 10, border: 0, background: '#1D4ED8', color: '#fff', fontSize: 14, fontWeight: 600, cursor: isGuardandoEdicion ? 'wait' : 'pointer', opacity: isGuardandoEdicion ? 0.7 : 1, display: 'flex', alignItems: 'center', gap: 8 }}
                 >
                   {isGuardandoEdicion ? (
                     <>
@@ -1697,7 +1622,10 @@ export default function AuditoriaClient() {
                 </button>
               )}
             </div>
+
           </div>
+        </div>
+      )}
 
           {/* Visor de fotos (lightbox) con navegación anterior/siguiente */}
           {lightbox && (
@@ -1780,8 +1708,6 @@ export default function AuditoriaClient() {
               )}
             </div>
           )}
-        </div>
-      )}
     </div>
   );
 }

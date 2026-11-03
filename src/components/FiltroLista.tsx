@@ -24,6 +24,8 @@ export default function FiltroLista({
   opciones,
   onChange,
   buscable = false,
+  ocupaTodo = false,
+  textoBoton,
 }: {
   /** Texto del botón cuando no hay filtro: "Localidad", "Técnico"… */
   etiqueta: string;
@@ -35,6 +37,10 @@ export default function FiltroLista({
   opciones: Opcion[];
   onChange: (valor: string) => void;
   buscable?: boolean;
+  /** Si es true, el botón ocupa todo el ancho de su contenedor (formularios con etiqueta arriba). */
+  ocupaTodo?: boolean;
+  /** Texto del botón cuando no hay filtro activo. Si no se da, se usa `etiqueta`. */
+  textoBoton?: string;
 }) {
   const [abierto, setAbierto] = useState(false);
   const [consulta, setConsulta] = useState('');
@@ -183,12 +189,13 @@ export default function FiltroLista({
           className="active:scale-[0.97]"
           style={{
             ...estiloBase, padding: '0 14px', background: '#fff',
+            ...(ocupaTodo ? { width: '100%', justifyContent: 'space-between' } : {}),
             border: `1px solid ${abierto ? '#2563EB' : '#CBD5E1'}`,
             boxShadow: abierto ? '0 0 0 3px #DBE7FF' : 'none',
             borderRadius: 10,
           }}
         >
-          {etiqueta}
+          {textoBoton ?? etiqueta}
           {flecha}
         </button>
       )}
