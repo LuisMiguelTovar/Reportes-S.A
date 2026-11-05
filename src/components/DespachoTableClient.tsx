@@ -92,6 +92,79 @@ const formatBarrio = (barrio?: string): string => {
   return barrio.replace(/^\s*\d+\s*-\s*/, '').trim() || barrio;
 };
 
+// Palabras que se escriben sin tilde en la base y deben verse con tilde. Se amplía cuando aparezcan más.
+const ACENTOS: Record<string, string> = {
+  reparacion: 'reparación', instalacion: 'instalación', revision: 'revisión', inspeccion: 'inspección',
+  conexion: 'conexión', reconexion: 'reconexión', suspension: 'suspensión', cotizacion: 'cotización',
+  medicion: 'medición', verificacion: 'verificación', adecuacion: 'adecuación', instalaciones: 'instalaciones',
+  terron: 'terrón', canaveralejo: 'cañaveralejo', cano: 'caño', republica: 'república', union: 'unión',
+  fatima: 'fátima', maria: 'maría', jose: 'josé', martin: 'martín', joaquin: 'joaquín',
+};
+const CONECTORES = new Set(['de', 'del', 'la', 'las', 'los', 'el', 'y', 'e', 'en']);
+const conTilde = (p: string) => ACENTOS[p] ?? p;
+
+// "TERRON COLORADO" -> "Terrón Colorado"; "BARRIO DE LA PAZ" -> "Barrio de la Paz"
+const tituloEs = (s: string): string =>
+  s.trim().toLowerCase().split(/\s+/).filter(Boolean)
+    .map((p, i) => {
+      const w = conTilde(p);
+      return i > 0 && CONECTORES.has(w) ? w : w.charAt(0).toUpperCase() + w.slice(1);
+    })
+    .join(' ');
+
+// "12137-TRABAJOS POR REPARACION" -> "Trabajos por reparación"
+const oracionEs = (s: string): string => {
+  const t = etiquetaTrabajo(s).split(' ').map(conTilde).join(' ');
+  return t.charAt(0).toUpperCase() + t.slice(1);
+};
+
+// Control de opciones cortas (un clic): Fecha y Alerta en el panel de filtros.
+function SegmentosFiltro({
+  etiqueta, opciones, activo, onElegir,
+}: {
+  etiqueta: string;
+  opciones: { id: string; texto: string }[];
+  activo: string | null;
+  onElegir: (id: string) => void;
+}) {
+  return (
+    <div role="group" aria-label={etiqueta} style={{ display: 'flex', gap: 2, padding: 4, background: '#F1F5F9', borderRadius: 10, minHeight: 44, boxSizing: 'border-box', alignItems: 'center' }}>
+      {opciones.map(o => {
+        const on = o.id === activo;
+        return (
+          <button
+            key={o.id}
+            type="button"
+            aria-pressed={on}
+            onClick={() => onElegir(o.id)}
+            style={{
+              flex: 1, minHeight: 36, border: 0, borderRadius: 7, cursor: 'pointer', whiteSpace: 'nowrap',
+              fontSize: 13, fontWeight: on ? 600 : 500,
+              background: on ? '#fff' : 'transparent', color: on ? '#0F2A5C' : '#64748B',
+              boxShadow: on ? '0 1px 2px rgba(15,42,92,0.14)' : 'none',
+            }}
+          >
+            {o.texto}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// Aplica el filtro de la columna "Alerta" a una consulta de Supabase.
+// sel === null → sin filtro. Valores: 'POSIBLE_DUPLICADA', 'DOBLE', 'SIN_ALERTA'.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function aplicarFiltroAlerta(q: any, sel: Set<string> | null) {
+  if (!sel) return;
+  const partes: string[] = [];
+  sel.forEach(v => {
+    if (v === 'SIN_ALERTA') partes.push('alerta_orden.is.null');
+    else partes.push(`alerta_orden.eq.${v}`);
+  });
+  if (partes.length > 0) q.or(partes.join(','));
+}
+
 function ExcelColumnFilter({
   options,
   selected,
@@ -210,10 +283,39 @@ export default function DespachoTableClient() {
   const [fechaFilter, setFechaFilter] = useState('Todas');
   const [tecnicoFilter, setTecnicoFilter] = useState('Todos');
   const [estadoFilter, setEstadoFilter] = useState('Todos');
+  const [alertaSelected, setAlertaSelected] = useState<Set<string> | null>(null);
+  const [filtrosAbiertos, setFiltrosAbiertos] = useState(false);
+  const panelFiltrosRef = useRef<HTMLDivElement>(null);
+  const botonFiltrosRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!filtrosAbiertos) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as HTMLElement;
+      if (panelFiltrosRef.current?.contains(t) || botonFiltrosRef.current?.contains(t)) return;
+      // Las listas desplegables de los filtros pueden pintarse fuera del panel: no cerrar por ellas.
+      if (t.closest('[role="listbox"], [role="menu"], .menu-pop')) return;
+      setFiltrosAbiertos(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setFiltrosAbiertos(false);
+        botonFiltrosRef.current?.focus();
+      }
+    };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [filtrosAbiertos]);
+  const [conteoDuplicadas, setConteoDuplicadas] = useState(0);
+  const [confirmDup, setConfirmDup] = useState<{ ordenes: Orden[] } | null>(null);
+  const [cerrandoDup, setCerrandoDup] = useState(false);
 
   // ── Filtros tipo Excel en encabezados de columna (selección múltiple) ──
   // Cada uno: null = "todas las opciones" (sin filtro). Set<string> = solo esos valores están incluidos.
-  type ExcelFilterKey = 'orden' | 'contrato' | 'ubicacion' | 'trabajo' | 'estado' | 'sla' | 'fechaProg' | 'fechaAsig' | 'tecnico';
+  type ExcelFilterKey = 'orden' | 'contrato' | 'ubicacion' | 'trabajo' | 'estado' | 'sla' | 'fechaProg' | 'fechaAsig' | 'tecnico' | 'alerta';
 
   const [openColumnFilter, setOpenColumnFilter] = useState<ExcelFilterKey | null>(null);
   const [columnFilterPosition, setColumnFilterPosition] = useState<{ top: number; left: number } | null>(null);
@@ -285,10 +387,15 @@ export default function DespachoTableClient() {
   const [zoomLevel, setZoomLevel] = useState(1);
   const [expandedEntries, setExpandedEntries] = useState<Set<number>>(new Set());
 
-  // ── Paginación ──
-  const PAGE_SIZE = 10;
-  const [currentPage, setCurrentPage] = useState(1);
+  // ── Lista continua (carga por lotes) ──
+  const LOTE = 50;
+  const MAX_FILAS = 200;
+  const [limite, setLimite] = useState(LOTE);
   const [totalCount, setTotalCount] = useState(0);
+  const listaRef = useRef<HTMLDivElement>(null);
+  const volverArriba = useCallback(() => {
+    listaRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+  }, []);
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [localidadesUnicas, setLocalidadesUnicas] = useState<string[]>([]);
   const [descripcionesUnicas, setDescripcionesUnicas] = useState<string[]>([]);
@@ -500,9 +607,8 @@ export default function DespachoTableClient() {
       debouncedSearch, localidadFilter, descripcionFilter, fechaFilter, tecnicoFilter, estadoFilter,
       ordenSelected, contratoSelected, ubicacionSelected, trabajoSelected, estadoColSelected, slaSelected, fechaProgSelected, fechaAsigSelected, tecnicoColSelected, true
     );
-    const from = (currentPage - 1) * PAGE_SIZE;
-    const to = from + PAGE_SIZE - 1;
-    query.range(from, to);
+    aplicarFiltroAlerta(query, alertaSelected);
+    query.range(0, limite - 1);
 
     const { data, error, count } = await query;
 
@@ -515,7 +621,7 @@ export default function DespachoTableClient() {
     }
     setLoadingOrdenes(false);
     setIsInitialLoad(false);
-  }, [buildFilteredQuery, debouncedSearch, localidadFilter, descripcionFilter, fechaFilter, tecnicoFilter, estadoFilter, ordenSelected, contratoSelected, ubicacionSelected, trabajoSelected, estadoColSelected, slaSelected, fechaProgSelected, fechaAsigSelected, tecnicoColSelected, currentPage]);
+  }, [buildFilteredQuery, debouncedSearch, localidadFilter, descripcionFilter, fechaFilter, tecnicoFilter, estadoFilter, ordenSelected, contratoSelected, ubicacionSelected, trabajoSelected, estadoColSelected, slaSelected, fechaProgSelected, fechaAsigSelected, tecnicoColSelected, alertaSelected, limite]);
 
   // ── Cantidades para los botones de estado (respetan los demás filtros activos) ──
   const [conteoEstados, setConteoEstados] = useState<{ todos: number; pendiente: number; programada: number } | null>(null);
@@ -527,6 +633,7 @@ export default function DespachoTableClient() {
           debouncedSearch, localidadFilter, descripcionFilter, fechaFilter, tecnicoFilter, estado,
           ordenSelected, contratoSelected, ubicacionSelected, trabajoSelected, estadoColSelected, slaSelected, fechaProgSelected, fechaAsigSelected, tecnicoColSelected, true
         );
+        aplicarFiltroAlerta(q, alertaSelected);
         q.range(0, 0);
         const { count, error } = await q;
         return error ? null : (count ?? 0);
@@ -536,7 +643,7 @@ export default function DespachoTableClient() {
       setConteoEstados({ todos, pendiente, programada });
     })();
     return () => { cancelado = true; };
-  }, [buildFilteredQuery, debouncedSearch, localidadFilter, descripcionFilter, fechaFilter, tecnicoFilter, ordenSelected, contratoSelected, ubicacionSelected, trabajoSelected, estadoColSelected, slaSelected, fechaProgSelected, fechaAsigSelected, tecnicoColSelected, ordenes]);
+  }, [buildFilteredQuery, debouncedSearch, localidadFilter, descripcionFilter, fechaFilter, tecnicoFilter, ordenSelected, contratoSelected, ubicacionSelected, trabajoSelected, estadoColSelected, slaSelected, fechaProgSelected, fechaAsigSelected, tecnicoColSelected, alertaSelected, ordenes]);
 
   type FilaFiltroOpciones = {
     orden_trabajo: string;
@@ -622,7 +729,8 @@ export default function DespachoTableClient() {
       );
 
     setLastUpdateDate(formatTimestamp(ahora));
-    setCurrentPage(1);
+    setLimite(LOTE);
+    listaRef.current?.scrollTo({ top: 0 });
     fetchOrdenes();
     fetchFilterOptions(); // refrescar opciones de dropdown
   }, [fetchOrdenes, fetchFilterOptions]);
@@ -633,16 +741,13 @@ export default function DespachoTableClient() {
     return () => clearTimeout(timer);
   }, [searchTerm]);
 
-  // ── Reset a página 1 cuando cambian los filtros ──
+  // ── Volver arriba y a 50 filas cuando cambian los filtros ──
   useEffect(() => {
-    setCurrentPage(1);
+    setLimite(LOTE);
     setSelectedOrdenes([]);
-  }, [debouncedSearch, localidadFilter, descripcionFilter, fechaFilter, tecnicoFilter, estadoFilter, ordenSelected, contratoSelected, ubicacionSelected, trabajoSelected, estadoColSelected, slaSelected, fechaProgSelected, fechaAsigSelected, tecnicoColSelected]);
+    listaRef.current?.scrollTo({ top: 0 });
+  }, [debouncedSearch, localidadFilter, descripcionFilter, fechaFilter, tecnicoFilter, estadoFilter, ordenSelected, contratoSelected, ubicacionSelected, trabajoSelected, estadoColSelected, slaSelected, fechaProgSelected, fechaAsigSelected, tecnicoColSelected, alertaSelected]);
 
-  // ── Limpiar selección al cambiar de página ──
-  useEffect(() => {
-    setSelectedOrdenes([]);
-  }, [currentPage]);
 
   // ── Fetch reactivo: cada vez que cambian filtros o página ──
   useEffect(() => {
@@ -1077,7 +1182,7 @@ export default function DespachoTableClient() {
 
     if (!window.confirm(
       `¿Cerrar la orden ${reporteOrden.orden_trabajo} como Efectiva con la orden ${relacionada} (mismo contrato, ya cerrada)? ` +
-      `Se copiarán la fecha de cierre y las fotos de la orden ${relacionada}.`
+      `Se cerrará con la fecha de hoy y se copiarán las fotos de la orden ${relacionada}.`
     )) return;
 
     setIsGuardando(true);
@@ -1125,7 +1230,7 @@ export default function DespachoTableClient() {
       // 4. Cerrar la orden con la fecha de cierre de la relacionada
       const { error: errUpd } = await supabase
         .from('ordenes')
-        .update({ estado: 'Efectiva', fecha_cierre: rel.fecha_cierre || new Date().toISOString() })
+        .update({ estado: 'Efectiva', fecha_cierre: new Date().toISOString(), alerta_orden: 'DUPLICADA_CERRADA' })
         .eq('orden_trabajo', reporteOrden.orden_trabajo);
       if (errUpd) {
         setErrorGuardar(`Error al actualizar la orden: ${errUpd.message}`);
@@ -1144,6 +1249,114 @@ export default function DespachoTableClient() {
     }
   };
 
+  // Altura de la lista = lo que queda de pantalla desde donde empieza hasta el borde inferior,
+  // menos el pie y 48 px (relleno de la tarjeta + aire). Se recalcula al redimensionar y al cambiar el contenido.
+  const footerRef = useRef<HTMLDivElement>(null);
+  const [alturaLista, setAlturaLista] = useState<number | null>(null);
+  useEffect(() => {
+    const calcular = () => {
+      const el = listaRef.current;
+      if (!el) return;
+      const arriba = el.getBoundingClientRect().top + window.scrollY;
+      const pie = footerRef.current ? footerRef.current.offsetHeight + 16 : 0;
+      setAlturaLista(Math.max(320, Math.floor(window.innerHeight - arriba - pie - 48)));
+    };
+    const id = requestAnimationFrame(calcular);
+    window.addEventListener('resize', calcular);
+    return () => { cancelAnimationFrame(id); window.removeEventListener('resize', calcular); };
+  }, [ordenes.length, totalCount, conteoDuplicadas, alertaSelected, loadingOrdenes]);
+
+  // La columna "Alerta" solo se muestra si hay alguna alerta (cargada o contada) o si el filtro está activo.
+  const mostrarAlerta = alertaSelected !== null || conteoDuplicadas > 0 || ordenes.some(o => !!o.alerta_orden);
+
+  // ── Posibles duplicadas ──
+  useEffect(() => {
+    let cancelado = false;
+    (async () => {
+      const { count, error } = await supabase
+        .from('ordenes')
+        .select('orden_trabajo', { count: 'exact', head: true })
+        .eq('area', area)
+        .eq('alerta_orden', 'POSIBLE_DUPLICADA')
+        .in('estado', ['Pendiente', 'Programada']);
+      if (!cancelado && !error) setConteoDuplicadas(count ?? 0);
+    })();
+    return () => { cancelado = true; };
+  }, [area, ordenes]);
+
+  // Cierra UNA orden como Efectiva con los datos de la orden relacionada. Devuelve null si salió bien o el mensaje de error.
+  const cerrarConRelacionada = async (ordenTrabajo: string, relacionada: string): Promise<string | null> => {
+    if (!relacionada) return 'no tiene orden relacionada';
+    const { data: rel, error: errRel } = await supabase
+      .from('ordenes').select('estado, fecha_cierre').eq('orden_trabajo', relacionada).single();
+    if (errRel || !rel) return `no se encontró la orden ${relacionada}`;
+    if (rel.estado !== 'Efectiva') return `la orden ${relacionada} ya no está Efectiva (${rel.estado})`;
+
+    const { data: hist } = await supabase
+      .from('historial_ordenes').select('fotos')
+      .eq('orden_trabajo', relacionada).eq('estado', 'Efectiva')
+      .order('fecha', { ascending: false }).limit(1);
+    const fotosCopiadas = (hist && hist[0]?.fotos) || null;
+
+    const { error: errHist } = await supabase.from('historial_ordenes').insert({
+      orden_trabajo: ordenTrabajo,
+      estado: 'Efectiva',
+      comentario: `Cerrada como duplicada con la orden ${relacionada} (mismo contrato, ya ejecutada).`,
+      fotos: fotosCopiadas,
+      usuario: user?.email || '',
+      rol: 'admin',
+    });
+    if (errHist) return `error al guardar historial: ${errHist.message}`;
+
+    const { error: errUpd } = await supabase
+      .from('ordenes')
+      .update({ estado: 'Efectiva', fecha_cierre: new Date().toISOString(), alerta_orden: 'DUPLICADA_CERRADA' })
+      .eq('orden_trabajo', ordenTrabajo);
+    if (errUpd) return `error al actualizar la orden: ${errUpd.message}`;
+    return null;
+  };
+
+  const confirmarCierreDuplicadas = async () => {
+    if (!confirmDup) return;
+    setCerrandoDup(true);
+    let ok = 0;
+    const fallos: string[] = [];
+    for (const o of confirmDup.ordenes) {
+      const err = await cerrarConRelacionada(o.orden_trabajo, String(o.orden_relacionada || ''));
+      if (err) fallos.push(`${o.orden_trabajo}: ${err}`); else ok++;
+    }
+    setCerrandoDup(false);
+    setConfirmDup(null);
+    setSelectedOrdenes([]);
+    if (ok > 0) toast.success(ok === 1 ? '1 orden cerrada como duplicada' : `${ok} órdenes cerradas como duplicadas`);
+    if (fallos.length > 0) toast.error(fallos.join('\n'));
+    fetchOrdenes();
+  };
+
+  const abrirCierreTodasDuplicadas = async () => {
+    const { data, error } = await supabase
+      .from('ordenes').select('*')
+      .eq('area', area).eq('alerta_orden', 'POSIBLE_DUPLICADA').in('estado', ['Pendiente', 'Programada'])
+      .order('fecha_asignacion_ot', { ascending: true });
+    if (error || !data || data.length === 0) { toast.error('No se pudieron cargar las duplicadas.'); return; }
+    setConfirmDup({ ordenes: data as Orden[] });
+  };
+
+  const marcarNoDuplicada = async (o: Orden) => {
+    const { error } = await supabase
+      .from('ordenes').update({ alerta_orden: null, orden_relacionada: null }).eq('orden_trabajo', o.orden_trabajo);
+    if (error) { toast.error(`No se pudo actualizar la orden ${o.orden_trabajo}.`); return; }
+    await supabase.from('historial_ordenes').insert({
+      orden_trabajo: o.orden_trabajo,
+      estado: o.estado,
+      comentario: `Marcada como NO duplicada (se había alertado por la orden ${String(o.orden_relacionada || '')}).`,
+      usuario: user?.email || '',
+      rol: 'admin',
+    });
+    toast.success(`Orden ${o.orden_trabajo}: alerta retirada`);
+    fetchOrdenes();
+  };
+
   const isAllVisibleSelected = ordenes.length > 0 && ordenes.every(o => selectedOrdenes.includes(o.orden_trabajo));
 
   // ── Exportar a CSV (todos los filtrados, sin paginación) ──────────────
@@ -1153,6 +1366,7 @@ export default function DespachoTableClient() {
       debouncedSearch, localidadFilter, descripcionFilter, fechaFilter, tecnicoFilter, estadoFilter,
       ordenSelected, contratoSelected, ubicacionSelected, trabajoSelected, estadoColSelected, slaSelected, fechaProgSelected, fechaAsigSelected, tecnicoColSelected, false
     );
+    aplicarFiltroAlerta(query, alertaSelected);
     const { data: allFiltered, error } = await query;
 
     if (error || !allFiltered || allFiltered.length === 0) return;
@@ -1268,135 +1482,311 @@ export default function DespachoTableClient() {
         </div>
       </div>
       {/* Controles de Filtros */}
-      <div className="bg-white border border-gray-100 rounded-2xl shadow-[0_8px_24px_rgba(15,23,42,0.05)]">
-        <div role="group" aria-label="Estado de las órdenes" style={{ display: 'flex', gap: 28, padding: '0 24px', borderBottom: '1px solid #E3E9F4' }}>
-          {([
-            ['Todos', 'Todas', conteoEstados?.todos],
-            ['Pendiente', 'Pendientes', conteoEstados?.pendiente],
-            ['Programada', 'Programadas', conteoEstados?.programada],
-          ] as const).map(([valor, etiqueta, n]) => {
-            const activa = estadoFilter === valor;
-            return (
-              <button
-                key={valor}
-                type="button"
-                aria-pressed={activa}
-                onClick={() => setEstadoFilter(valor)}
-                style={{
-                  minHeight: 48, padding: 0, border: 0, marginBottom: -1, background: 'none', cursor: 'pointer',
-                  borderBottom: `2px solid ${activa ? '#2563EB' : 'transparent'}`,
-                  color: activa ? '#0F2A5C' : '#64748B', fontSize: 14, fontWeight: activa ? 600 : 500,
-                  transition: 'color 150ms ease, border-color 150ms ease',
-                }}
-              >
-                {etiqueta}
-                {n !== undefined && (
-                  <span style={{ marginLeft: 6, fontWeight: 500, color: '#64748B', fontVariantNumeric: 'tabular-nums' }}>{n}</span>
-                )}
-              </button>
-            );
-          })}
-        </div>
-
+      <div className="bg-white border border-gray-100 rounded-2xl shadow-[0_8px_24px_rgba(15,23,42,0.05)]" style={{ position: 'relative' }}>
         {(() => {
+          const modoAlerta: string | null =
+            alertaSelected === null ? 'todas'
+            : alertaSelected.size === 2 && alertaSelected.has('POSIBLE_DUPLICADA') && alertaSelected.has('DOBLE') ? 'con'
+            : alertaSelected.size === 1 && alertaSelected.has('POSIBLE_DUPLICADA') ? 'dup'
+            : alertaSelected.size === 1 && alertaSelected.has('DOBLE') ? 'dob'
+            : null;
+          const textoAlerta =
+            modoAlerta === 'con' ? 'Con alerta'
+            : modoAlerta === 'dup' ? 'Duplicada'
+            : modoAlerta === 'dob' ? 'Doble'
+            : `${alertaSelected?.size ?? 0} tipos`;
+          const nombreTecnico = tecnicoFilter === 'Sin asignar'
+            ? 'Sin asignar'
+            : nombreTitulo(tecnicos.find(t => t.id_usuario === tecnicoFilter)?.nombre || '');
+
+          const chips: { id: string; texto: string; quitar: () => void }[] = [];
+          if (localidadFilter !== 'Todas') chips.push({ id: 'loc', texto: `Localidad: ${localidadFilter}`, quitar: () => setLocalidadFilter('Todas') });
+          if (descripcionFilter !== 'Todas las Descripciones') chips.push({ id: 'tipo', texto: `Tipo: ${etiquetaTrabajo(descripcionFilter)}`, quitar: () => setDescripcionFilter('Todas las Descripciones') });
+          if (tecnicoFilter !== 'Todos') chips.push({ id: 'tec', texto: `Técnico: ${nombreTecnico}`, quitar: () => setTecnicoFilter('Todos') });
+          if (fechaFilter !== 'Todas') chips.push({ id: 'fecha', texto: `Fecha: ${fechaFilter}`, quitar: () => setFechaFilter('Todas') });
+          if (alertaSelected !== null) chips.push({ id: 'alerta', texto: `Alerta: ${textoAlerta}`, quitar: () => setAlertaSelected(null) });
+
+          const nPanel = chips.length;
           const hayFiltros =
-            searchTerm !== '' || localidadFilter !== 'Todas' || descripcionFilter !== 'Todas las Descripciones' ||
-            fechaFilter !== 'Todas' || tecnicoFilter !== 'Todos' || estadoFilter !== 'Todos' ||
+            searchTerm !== '' || nPanel > 0 || estadoFilter !== 'Todos' ||
             [ordenSelected, contratoSelected, ubicacionSelected, trabajoSelected, estadoColSelected, slaSelected, fechaProgSelected, fechaAsigSelected, tecnicoColSelected].some(s => s !== null);
+          const limpiarTodo = () => {
+            setSearchTerm(''); setLocalidadFilter('Todas'); setDescripcionFilter('Todas las Descripciones'); setFechaFilter('Todas'); setTecnicoFilter('Todos'); setEstadoFilter('Todos'); setAlertaSelected(null);
+            setOrdenSelected(null);
+            setContratoSelected(null);
+            setUbicacionSelected(null);
+            setTrabajoSelected(null);
+            setEstadoColSelected(null);
+            setSlaSelected(null);
+            setFechaProgSelected(null);
+            setFechaAsigSelected(null);
+            setTecnicoColSelected(null);
+          };
+          const etiquetaCampo: React.CSSProperties = { display: 'block', margin: '0 0 6px', fontSize: 12, fontWeight: 500, color: '#64748B' };
+
           return (
-            <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 10, padding: '14px 24px' }}>
-              <div style={{ position: 'relative', flex: '1 1 320px', minWidth: 260 }}>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#64748B" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ position: 'absolute', left: 14, top: 14 }}>
-                  <circle cx="11" cy="11" r="7" /><path d="M21 21l-4.3-4.3" />
-                </svg>
-                <input
-                  type="text"
-                  placeholder="Buscar por contrato, orden, dirección o barrio"
-                  aria-label="Buscar por contrato, orden, dirección o barrio"
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                  style={{ boxSizing: 'border-box', width: '100%', minHeight: 44, padding: '0 14px 0 40px', border: '1px solid #CBD5E1', borderRadius: 10, background: '#fff', fontSize: 14, color: '#0F2A5C' }}
-                />
+            <>
+              {/* Fila única: pestañas + buscador + botón Filtros */}
+              <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '0 28px', padding: '0 24px', minHeight: 64 }}>
+                <div role="group" aria-label="Estado de las órdenes" style={{ display: 'flex', gap: 28 }}>
+                  {([
+                    ['Todos', 'Todas', conteoEstados?.todos],
+                    ['Pendiente', 'Pendientes', conteoEstados?.pendiente],
+                    ['Programada', 'Programadas', conteoEstados?.programada],
+                  ] as const).map(([valor, etiqueta, n]) => {
+                    const activa = estadoFilter === valor;
+                    return (
+                      <button
+                        key={valor}
+                        type="button"
+                        aria-pressed={activa}
+                        onClick={() => setEstadoFilter(valor)}
+                        style={{
+                          minHeight: 64, padding: 0, border: 0, background: 'none', cursor: 'pointer',
+                          borderBottom: `2px solid ${activa ? '#0F2A5C' : 'transparent'}`,
+                          color: activa ? '#0F2A5C' : '#64748B', fontSize: 14, fontWeight: activa ? 600 : 500,
+                          transition: 'color 150ms ease, border-color 150ms ease',
+                        }}
+                      >
+                        {etiqueta}
+                        {n !== undefined && (
+                          <span style={{ marginLeft: 6, fontWeight: 500, color: '#64748B', fontVariantNumeric: 'tabular-nums' }}>{n}</span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div style={{ position: 'relative', flex: '1 1 320px', minWidth: 260 }}>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#64748B" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ position: 'absolute', left: 14, top: 14 }}>
+                    <circle cx="11" cy="11" r="7" /><path d="M21 21l-4.3-4.3" />
+                  </svg>
+                  <input
+                    type="text"
+                    placeholder="Buscar por contrato, orden, dirección o barrio"
+                    aria-label="Buscar por contrato, orden, dirección o barrio"
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                    style={{ boxSizing: 'border-box', width: '100%', minHeight: 44, padding: '0 14px 0 40px', border: '1px solid #CBD5E1', borderRadius: 10, background: '#fff', fontSize: 14, color: '#0F2A5C' }}
+                  />
+                </div>
+
+                <button
+                  ref={botonFiltrosRef}
+                  type="button"
+                  aria-haspopup="dialog"
+                  aria-expanded={filtrosAbiertos}
+                  onClick={() => setFiltrosAbiertos(v => !v)}
+                  style={{
+                    minHeight: 44, padding: '0 14px', borderRadius: 10, cursor: 'pointer', fontSize: 14, display: 'inline-flex', alignItems: 'center', gap: 8,
+                    border: `1px solid ${nPanel > 0 ? '#BFDBFE' : '#CBD5E1'}`,
+                    background: nPanel > 0 ? '#EFF6FF' : '#fff',
+                    color: nPanel > 0 ? '#1D4ED8' : '#0F2A5C',
+                    fontWeight: nPanel > 0 ? 600 : 500,
+                  }}
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M4 6h16M7 12h10M10 18h4" /></svg>
+                  Filtros
+                  {nPanel > 0 && (
+                    <span style={{ fontSize: 12, fontWeight: 600, background: '#1D4ED8', color: '#fff', borderRadius: 999, padding: '1px 8px' }}>{nPanel}</span>
+                  )}
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg>
+                </button>
               </div>
 
-              <FiltroLista
-                etiqueta="Localidad"
-                value={localidadFilter}
-                valorVacio="Todas"
-                textoVacio="Todas las localidades"
-                opciones={localidadesUnicas.map(loc => ({ value: loc, label: loc }))}
-                onChange={setLocalidadFilter}
-              />
-              <FiltroLista
-                etiqueta="Tipo de trabajo"
-                value={descripcionFilter}
-                valorVacio="Todas las Descripciones"
-                textoVacio="Todos los tipos de trabajo"
-                opciones={descripcionesUnicas.map(desc => ({ value: desc, label: etiquetaTrabajo(desc) }))}
-                onChange={setDescripcionFilter}
-              />
-              <FiltroLista
-                etiqueta="Técnico"
-                value={tecnicoFilter}
-                valorVacio="Todos"
-                textoVacio="Todos los técnicos"
-                buscable
-                opciones={[
-                  { value: 'Sin asignar', label: 'Sin asignar' },
-                  ...tecnicos
-                    .map(t => ({ value: t.id_usuario, label: nombreTitulo(t.nombre) }))
-                    .sort((a, b) => a.label.localeCompare(b.label, 'es')),
-                ]}
-                onChange={setTecnicoFilter}
-              />
-              <FiltroLista
-                etiqueta="Fecha"
-                value={fechaFilter}
-                valorVacio="Todas"
-                textoVacio="Todas las fechas"
-                opciones={[
-                  { value: 'Hoy', label: 'Hoy (0 días)' },
-                  { value: 'Últimos 3 días', label: 'Últimos 3 días' },
-                  { value: 'Vencidas', label: 'Vencidas (3 días o más)' },
-                ]}
-                onChange={setFechaFilter}
-              />
-
+              {/* Pastillas de filtros activos */}
               {hayFiltros && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSearchTerm(''); setLocalidadFilter('Todas'); setDescripcionFilter('Todas las Descripciones'); setFechaFilter('Todas'); setTecnicoFilter('Todos'); setEstadoFilter('Todos');
-                    setOrdenSelected(null);
-                    setContratoSelected(null);
-                    setUbicacionSelected(null);
-                    setTrabajoSelected(null);
-                    setEstadoColSelected(null);
-                    setSlaSelected(null);
-                    setFechaProgSelected(null);
-                    setFechaAsigSelected(null);
-                    setTecnicoColSelected(null);
-                  }}
-                  style={{ minHeight: 44, padding: '0 10px', border: 0, background: 'none', color: '#1D4ED8', fontSize: 14, fontWeight: 500, cursor: 'pointer', whiteSpace: 'nowrap' }}
-                >
-                  Limpiar filtros
-                </button>
+                <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, padding: '4px 24px 14px' }}>
+                  {chips.map(c => (
+                    <button
+                      key={c.id}
+                      type="button"
+                      onClick={c.quitar}
+                      aria-label={`Quitar filtro ${c.texto}`}
+                      style={{ display: 'inline-flex', alignItems: 'center', gap: 8, minHeight: 36, padding: '0 10px 0 12px', borderRadius: 999, border: '1px solid #BFDBFE', background: '#EFF6FF', color: '#1D4ED8', fontSize: 13, fontWeight: 500, cursor: 'pointer' }}
+                    >
+                      {c.texto}
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
+                    </button>
+                  ))}
+                  <button type="button" onClick={limpiarTodo} style={{ minHeight: 44, padding: '0 10px', border: 0, background: 'none', color: '#1D4ED8', fontSize: 14, fontWeight: 500, cursor: 'pointer' }}>
+                    Limpiar filtros
+                  </button>
+                  <span aria-live="polite" style={{ marginLeft: 'auto', fontSize: 13, color: '#64748B', fontVariantNumeric: 'tabular-nums' }}>
+                    <b style={{ color: '#0F2A5C' }}>{totalCount}</b> {totalCount === 1 ? 'orden' : 'órdenes'}
+                  </span>
+                </div>
               )}
-            </div>
+
+              {/* Panel de filtros */}
+              {filtrosAbiertos && (
+                <div
+                  ref={panelFiltrosRef}
+                  role="dialog"
+                  aria-label="Filtros"
+                  style={{ position: 'absolute', right: 16, top: 70, width: 620, maxWidth: 'calc(100vw - 48px)', background: '#fff', border: '1px solid #E3E9F4', borderRadius: 14, boxShadow: '0 16px 40px rgba(15,42,92,0.18)', zIndex: 40 }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '16px 20px 4px' }}>
+                    <h2 style={{ margin: 0, fontSize: 16, fontWeight: 600, color: '#0F2A5C' }}>Filtros</h2>
+                    <span aria-live="polite" style={{ fontSize: 13, color: '#64748B', fontVariantNumeric: 'tabular-nums' }}>
+                      <b style={{ color: '#0F2A5C' }}>{totalCount}</b> {totalCount === 1 ? 'orden' : 'órdenes'}
+                    </span>
+                  </div>
+
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, padding: '12px 20px 16px' }}>
+                    <div>
+                      <span style={etiquetaCampo}>Localidad</span>
+                      <FiltroLista
+                        etiqueta="Localidad"
+                        textoBoton="Todas"
+                        value={localidadFilter}
+                        ocupaTodo
+                        valorVacio="Todas"
+                        textoVacio="Todas las localidades"
+                        opciones={localidadesUnicas.map(loc => ({ value: loc, label: loc }))}
+                        onChange={setLocalidadFilter}
+                      />
+                    </div>
+                    <div>
+                      <span style={etiquetaCampo}>Tipo de trabajo</span>
+                      <FiltroLista
+                        etiqueta="Tipo de trabajo"
+                        textoBoton="Todos"
+                        value={descripcionFilter}
+                        ocupaTodo
+                        valorVacio="Todas las Descripciones"
+                        textoVacio="Todos los tipos de trabajo"
+                        opciones={descripcionesUnicas.map(desc => ({ value: desc, label: etiquetaTrabajo(desc) }))}
+                        onChange={setDescripcionFilter}
+                      />
+                    </div>
+                    <div>
+                      <span style={etiquetaCampo}>Técnico</span>
+                      <FiltroLista
+                        etiqueta="Técnico"
+                        textoBoton="Todos"
+                        value={tecnicoFilter}
+                        ocupaTodo
+                        valorVacio="Todos"
+                        textoVacio="Todos los técnicos"
+                        buscable
+                        opciones={[
+                          { value: 'Sin asignar', label: 'Sin asignar' },
+                          ...tecnicos
+                            .map(t => ({ value: t.id_usuario, label: nombreTitulo(t.nombre) }))
+                            .sort((a, b) => a.label.localeCompare(b.label, 'es')),
+                        ]}
+                        onChange={setTecnicoFilter}
+                      />
+                    </div>
+                    <div>
+                      <span style={etiquetaCampo}>Fecha</span>
+                      <SegmentosFiltro
+                        etiqueta="Fecha"
+                        activo={fechaFilter}
+                        onElegir={setFechaFilter}
+                        opciones={[
+                          { id: 'Todas', texto: 'Todas' },
+                          { id: 'Hoy', texto: 'Hoy' },
+                          { id: 'Últimos 3 días', texto: '3 días' },
+                          { id: 'Vencidas', texto: 'Vencidas' },
+                        ]}
+                      />
+                    </div>
+                    <div style={{ gridColumn: '1 / -1' }}>
+                      <span style={etiquetaCampo}>Alerta</span>
+                      <SegmentosFiltro
+                        etiqueta="Alerta"
+                        activo={modoAlerta}
+                        onElegir={(id) =>
+                          setAlertaSelected(
+                            id === 'todas' ? null
+                            : id === 'con' ? new Set(['POSIBLE_DUPLICADA', 'DOBLE'])
+                            : id === 'dup' ? new Set(['POSIBLE_DUPLICADA'])
+                            : new Set(['DOBLE'])
+                          )
+                        }
+                        opciones={[
+                          { id: 'todas', texto: 'Todas' },
+                          { id: 'con', texto: 'Con alerta' },
+                          { id: 'dup', texto: 'Duplicada' },
+                          { id: 'dob', texto: 'Doble' },
+                        ]}
+                      />
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 16px 12px 20px', borderTop: '1px solid #EEF2F8', background: '#F8FAFC', borderRadius: '0 0 14px 14px' }}>
+                    <button
+                      type="button"
+                      onClick={limpiarTodo}
+                      disabled={!hayFiltros}
+                      style={{ marginRight: 'auto', minHeight: 44, padding: '0 4px', border: 0, background: 'none', color: hayFiltros ? '#1D4ED8' : '#94A3B8', fontSize: 14, fontWeight: 500, cursor: hayFiltros ? 'pointer' : 'default' }}
+                    >
+                      Limpiar filtros
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setFiltrosAbiertos(false); botonFiltrosRef.current?.focus(); }}
+                      style={{ minHeight: 44, padding: '0 22px', borderRadius: 10, border: 0, background: '#1D4ED8', color: '#fff', fontSize: 14, fontWeight: 600, cursor: 'pointer' }}
+                    >
+                      {`Ver ${totalCount} ${totalCount === 1 ? 'orden' : 'órdenes'}`}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </>
           );
         })()}
       </div>
 
+      {(conteoDuplicadas > 0 || alertaSelected !== null) && (
+        <div
+          role="status"
+          style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap', background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 12, padding: '14px 20px', marginTop: 16 }}
+        >
+          <div style={{ marginRight: 'auto' }}>
+            <p style={{ margin: 0, fontSize: 15, fontWeight: 600, color: '#7F1D1D' }}>
+              {conteoDuplicadas === 1 ? '1 orden posible duplicada' : `${conteoDuplicadas} órdenes posibles duplicadas`}
+            </p>
+            <p style={{ margin: '2px 0 0', fontSize: 13, color: '#7F1D1D' }}>
+              Tipo 12137, «enmallamiento» y contrato gestionado hace 14 a 21 días. No se cierran solas: tú decides.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setAlertaSelected(prev => (prev ? null : new Set(['POSIBLE_DUPLICADA', 'DOBLE'])))}
+            style={{ minHeight: 44, padding: '0 18px', borderRadius: 10, background: '#fff', color: '#0F2A5C', border: '1px solid #CBD5E1', fontWeight: 500, fontSize: 14, cursor: 'pointer' }}
+          >
+            {alertaSelected ? 'Ver todas las órdenes' : 'Ver solo con alerta'}
+          </button>
+          {conteoDuplicadas > 0 && (
+            <button
+              type="button"
+              onClick={abrirCierreTodasDuplicadas}
+              style={{ minHeight: 44, padding: '0 18px', borderRadius: 10, background: '#B91C1C', color: '#fff', border: 0, fontWeight: 600, fontSize: 14, cursor: 'pointer' }}
+            >
+              Cerrar todas como duplicadas
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Tabla de Despacho */}
       <div className={`bg-white rounded-2xl shadow-[0_8px_24px_rgba(15,23,42,0.05)] border border-gray-100 overflow-hidden p-6 mt-4 transition-opacity duration-150 ${loadingOrdenes && !isInitialLoad ? 'opacity-50' : 'opacity-100'}`}>
-        <div className="w-full overflow-x-auto">
-          <table className="w-full min-w-[1200px] text-left border-collapse">
-            <thead>
-              <tr className="bg-gray-50 border-b border-gray-200 text-[12px] font-semibold tracking-[0.05em] uppercase text-[#64748B]">
+        <div
+          ref={listaRef}
+          className="w-full overflow-auto"
+          style={{ maxHeight: alturaLista ? `${alturaLista}px` : 'calc(100vh - 330px)', minHeight: 320 }}
+        >
+          <table className={`w-full ${mostrarAlerta ? 'min-w-[1320px]' : 'min-w-[1160px]'} text-left border-separate border-spacing-0 [&_tbody_td]:border-b [&_tbody_td]:border-[#EEF2F8]`}>
+            <thead className="sticky top-0 z-20 bg-gray-50 shadow-[0_1px_0_#E2E8F0]">
+              <tr className="bg-gray-50 text-[12px] font-medium text-[#64748B]">
                 <th className="py-2.5 px-2.5 w-10">
                   <input
                     type="checkbox"
                     className="rounded"
+                    style={{ width: 20, height: 20, cursor: 'pointer', accentColor: '#1D4ED8' }}
                     aria-label="Seleccionar todas las órdenes visibles"
                     checked={isAllVisibleSelected}
                     onChange={handleSelectAll}
@@ -1527,7 +1917,7 @@ export default function DespachoTableClient() {
                 </th>
 
                 {/* Estado */}
-                <th className="py-2.5 px-2.5 relative" style={{ width: '110px' }}>
+                <th className="py-2.5 px-2.5 relative" style={{ width: '124px' }}>
                   <div className="flex items-center gap-1">
                     <span>Estado</span>
                     <button
@@ -1558,9 +1948,45 @@ export default function DespachoTableClient() {
                 </th>
 
                 {/* Días / SLA */}
+                {mostrarAlerta && (
+                <th className="py-2.5 px-2.5 relative" style={{ width: '160px' }}>
+                  <div className="flex items-center gap-1">
+                    <span>Alerta</span>
+                    <button
+                      type="button"
+                      data-colfilter-caret="true"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        setColumnFilterPosition({ top: rect.bottom + 4, left: rect.left });
+                        setOpenColumnFilter(p => p === 'alerta' ? null : 'alerta');
+                      }}
+                      aria-label="Filtrar columna Alerta"
+                      className={`p-1.5 -m-1 rounded hover:bg-gray-200 ${alertaSelected !== null ? 'text-blue-600' : 'text-gray-400'}`}
+                    >
+                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" /></svg>
+                    </button>
+                    {alertaSelected !== null && <span aria-hidden="true" className="w-1.5 h-1.5 rounded-full bg-blue-600" />}
+                  </div>
+                  {openColumnFilter === 'alerta' && (
+                    <ExcelColumnFilter
+                      panelRef={columnFilterRef}
+                      position={columnFilterPosition ?? { top: 0, left: 0 }}
+                      options={[
+                        { value: 'POSIBLE_DUPLICADA', label: 'Posible duplicada' },
+                        { value: 'DOBLE', label: 'Orden doble' },
+                        { value: 'SIN_ALERTA', label: 'Sin alerta' },
+                      ]}
+                      selected={alertaSelected}
+                      onApply={(next) => { setAlertaSelected(next); setOpenColumnFilter(null); }}
+                      onCancel={() => setOpenColumnFilter(null)}
+                    />
+                  )}
+                </th>
+                )}
                 <th className="py-2.5 px-2.5 relative" style={{ width: '90px' }}>
                   <div className="flex items-center gap-1">
-                    <span>Días / SLA</span>
+                    <span className="whitespace-nowrap">Días</span>
                     <button
                       type="button"
                       data-colfilter-caret="true"
@@ -1591,7 +2017,7 @@ export default function DespachoTableClient() {
                 {/* Fecha Asignación */}
                 <th className="py-2.5 px-2.5 relative" style={{ width: '120px' }}>
                   <div className="flex items-center gap-1">
-                    <span>Fecha Asignación</span>
+                    <span className="whitespace-nowrap">Asignación</span>
                     <button
                       type="button"
                       data-colfilter-caret="true"
@@ -1622,7 +2048,7 @@ export default function DespachoTableClient() {
                 {/* F. Programada */}
                 <th className="py-2.5 px-2.5 relative" style={{ width: '120px' }}>
                   <div className="flex items-center gap-1">
-                    <span>F. Programada</span>
+                    <span className="whitespace-nowrap">Programada</span>
                     <button
                       type="button"
                       data-colfilter-caret="true"
@@ -1680,13 +2106,13 @@ export default function DespachoTableClient() {
                     />
                   )}
                 </th>
-                <th className="py-2.5 px-2.5 text-center" style={{ width: '50px' }}>Acciones</th>
+                <th className="py-2.5 px-2.5 text-center" style={{ width: '50px' }}><span className="sr-only">Acciones</span></th>
               </tr>
             </thead>
             <tbody className="text-xs text-gray-700">
               {ordenes.length === 0 ? (
                 <tr>
-                  <td colSpan={11} className="p-8 text-center text-gray-500">
+                  <td colSpan={mostrarAlerta ? 12 : 11} className="p-8 text-center text-gray-500">
                     No se encontraron órdenes que coincidan con los filtros.
                   </td>
                 </tr>
@@ -1695,12 +2121,26 @@ export default function DespachoTableClient() {
                   const tecNombre = getTecnicoNombre(row.id_tecnico_asignado as string);
                   const tecDisplay = tecNombre === 'Programado' ? '—' : tecNombre;
 
+                  const esPosibleDup = row.alerta_orden === 'POSIBLE_DUPLICADA' && (row.estado === 'Pendiente' || row.estado === 'Programada');
+                  const relDup = String(row.orden_relacionada || '');
+
                   return (
-                  <tr key={row.orden_trabajo} className="border-b border-[#F1F5F9] hover:bg-[#F8FAFC] transition-colors duration-150" style={{ height: '72px' }}>
+                  <React.Fragment key={row.orden_trabajo}>
+                  <tr
+                    className="border-b border-[#F1F5F9] hover:bg-[#F8FAFC] transition-colors duration-150"
+                    style={
+                      esPosibleDup
+                        ? { height: '72px', background: '#FFF5F5', boxShadow: 'inset 3px 0 0 #DC2626' }
+                        : selectedOrdenes.includes(row.orden_trabajo)
+                          ? { height: '72px', background: '#F0F6FF' }
+                          : { height: '72px' }
+                    }
+                  >
                     <td className="py-2.5 px-2.5">
                       <input
                         type="checkbox"
                         className="rounded"
+                        style={{ width: 20, height: 20, cursor: 'pointer', accentColor: '#1D4ED8' }}
                         aria-label={`Seleccionar orden ${row.orden_trabajo}`}
                         checked={selectedOrdenes.includes(row.orden_trabajo)}
                         onChange={(e) => handleSelectOne(row.orden_trabajo, e.target.checked)}
@@ -1708,7 +2148,7 @@ export default function DespachoTableClient() {
                     </td>
                     <td className="py-2.5 px-2.5" style={{ height: '72px' }}>
                       <div className="flex flex-col justify-center h-full">
-                        <p style={{ fontSize: '15px', fontWeight: 700, color: '#111827' }}>{row.orden_trabajo}</p>
+                        <p className="tabular-nums" style={{ fontSize: '14px', fontWeight: 500, color: '#475569' }}>{row.orden_trabajo}</p>
                       </div>
                     </td>
                     <td className="py-2.5 px-2.5" style={{ height: '72px' }}>
@@ -1718,65 +2158,79 @@ export default function DespachoTableClient() {
                     </td>
                     <td className="py-2.5 px-2.5" style={{ height: '72px', wordBreak: 'break-word' }}>
                       <div className="flex flex-col justify-center h-full gap-0.5">
-                        <p className="flex items-start gap-1" style={{ fontSize: '14px', fontWeight: 600, color: '#111827' }}>
+                        <p className="flex items-start gap-1" style={{ fontSize: '14px', fontWeight: 600, color: '#0F2A5C' }}>
                           {row.direccion}
                         </p>
-                        <p style={{ fontSize: '13px', fontWeight: 400, color: '#64748B' }}>{formatBarrio(row.barrio)}</p>
-                        <p style={{ fontSize: '12px', fontWeight: 400, color: '#64748B' }}>{row.localidad}</p>
+                        <p style={{ fontSize: '13px', fontWeight: 400, color: '#64748B' }}>
+                          {[tituloEs(formatBarrio(row.barrio)), tituloEs(String(row.localidad || ''))].filter(t => t && t !== '-').join(' · ')}
+                        </p>
                       </div>
                     </td>
-                    <td className="py-2.5 px-2.5 text-gray-500" style={{ height: '72px' }}>
+                    <td className="py-2.5 px-2.5" style={{ height: '72px', color: '#334155' }}>
                       <div className="flex flex-col justify-center h-full">
-                        <p title={row.descripcion_del_trabajo || undefined} style={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
-                          {row.descripcion_del_trabajo || '-'}
+                        <p title={row.descripcion_del_trabajo || undefined} style={{ fontSize: 13, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+                          {row.descripcion_del_trabajo ? oracionEs(String(row.descripcion_del_trabajo)) : '-'}
                         </p>
                       </div>
                     </td>
                     <td className="py-2.5 px-2.5 align-middle">
-                      <span
-                        className="inline-block px-3 py-1 rounded-full text-xs font-semibold whitespace-nowrap"
-                        style={{ background: getEstadoBadge(row.estado).bg, color: getEstadoBadge(row.estado).text }}
-                      >
+                      <span className="inline-flex items-center gap-2 whitespace-nowrap" style={{ fontSize: 14, fontWeight: 500, color: '#0F2A5C' }}>
+                        <span
+                          aria-hidden="true"
+                          style={{ width: 8, height: 8, borderRadius: '50%', flexShrink: 0, background: row.estado === 'Programada' ? '#D97706' : '#2563EB' }}
+                        />
                         {getEstadoBadge(row.estado).label}
                       </span>
-                      {row.alerta_orden ? (
-                        <span
-                          className="block mt-1 px-2 py-0.5 rounded-md text-[11px] font-semibold whitespace-nowrap w-fit"
-                          style={
-                            row.alerta_orden === 'POSIBLE_DUPLICADA'
-                              ? { background: '#FEE2E2', color: '#991B1B' }
-                              : { background: '#FFEDD5', color: '#9A3412' }
-                          }
-                          title={
-                            row.alerta_orden === 'POSIBLE_DUPLICADA'
-                              ? `Mismo contrato que la orden ${String(row.orden_relacionada || '')}, cerrada hace 2-3 semanas`
-                              : `Mismo contrato que la orden ${String(row.orden_relacionada || '')}`
-                          }
-                        >
-                          {row.alerta_orden === 'POSIBLE_DUPLICADA' ? 'Posible duplicada' : 'Orden doble'} · #{String(row.orden_relacionada || '')}
-                        </span>
-                      ) : null}
                     </td>
+                    {mostrarAlerta && (
+                    <td className="py-2.5 px-2.5 align-middle">
+                      {row.alerta_orden ? (
+                        <div>
+                          <span
+                            className="inline-flex items-center gap-1.5 pl-2 pr-2.5 py-0.5 rounded-full border text-[12px] font-semibold whitespace-nowrap"
+                            style={
+                              row.alerta_orden === 'POSIBLE_DUPLICADA'
+                                ? { background: '#FEE2E2', borderColor: '#FECACA', color: '#B91C1C' }
+                                : { background: '#FFF7ED', borderColor: '#FED7AA', color: '#9A3412' }
+                            }
+                          >
+                            {row.alerta_orden === 'POSIBLE_DUPLICADA' ? (
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2" /><path d="M5 15V6a2 2 0 012-2h9" /></svg>
+                            ) : (
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 3l10 18H2L12 3z" /><path d="M12 10v5M12 18.5v.01" /></svg>
+                            )}
+                            {row.alerta_orden === 'POSIBLE_DUPLICADA' ? 'Duplicada' : 'Doble'}
+                          </span>
+                          <p className="mt-1 text-[12px] text-[#64748B] tabular-nums">
+                            {row.alerta_orden === 'POSIBLE_DUPLICADA' ? 'de' : 'con'} #{relDup}
+                          </p>
+                        </div>
+                      ) : (
+                        <span className="text-[#CBD5E1]" aria-label="Sin alerta">–</span>
+                      )}
+                    </td>
+                    )}
                     <td className="py-2.5 px-2.5">
                       {(() => {
                         const daysSLA = calcularDiasSLA(row.fecha_asignacion_ot);
-                        const slaColor = daysSLA >= 3 ? 'bg-red-100 text-red-800' : daysSLA === 2 ? 'bg-orange-100 text-orange-800' : 'bg-green-100 text-green-800';
+                        const slaColor = daysSLA >= 3 ? '#B91C1C' : '#475569';
                         return (
-                          <span className={`inline-block px-3 py-1 rounded-full text-xs font-semibold whitespace-nowrap ${slaColor}`}>
+                          <span className="inline-flex items-center gap-2 whitespace-nowrap tabular-nums" style={{ fontSize: 14, fontWeight: 600, color: slaColor }}>
+                            <span aria-hidden="true" style={{ width: 8, height: 8, borderRadius: '50%', flexShrink: 0, background: slaColor }} />
                             {daysSLA} {daysSLA === 1 ? 'día' : 'días'}
                           </span>
                         );
                       })()}
                     </td>
-                    <td className="py-2.5 px-2.5 whitespace-nowrap">
+                    <td className="py-2.5 px-2.5 whitespace-nowrap tabular-nums" style={{ fontSize: 13, color: '#475569' }}>
                       {formatearFechaPura(row.fecha_asignacion_ot)}
                     </td>
-                    <td className="py-2.5 px-2.5 whitespace-nowrap">
+                    <td className="py-2.5 px-2.5 whitespace-nowrap tabular-nums" style={{ fontSize: 13, color: '#475569' }}>
                       {formatearFechaPura(row.fecha_programada)}
                     </td>
                     <td className="py-2.5 px-2.5">
                       {tecDisplay ? (
-                        <p className="text-gray-900 font-medium whitespace-nowrap">{tecDisplay}</p>
+                        <p className="whitespace-nowrap" style={{ fontSize: 13, color: '#334155' }}>{tecDisplay === '—' ? '—' : nombreTitulo(tecDisplay)}</p>
                       ) : (
                         <p className="text-gray-400 italic">Sin asignar</p>
                       )}
@@ -1801,8 +2255,9 @@ export default function DespachoTableClient() {
                             setOpenMenuId(row.orden_trabajo);
                           }
                         }}
-                        className="text-gray-400 hover:text-gray-700 hover:bg-gray-100 p-1.5 rounded-lg transition-colors"
+                        className="inline-flex items-center justify-center w-11 h-11 text-[#64748B] hover:text-[#0F2A5C] hover:bg-gray-100 rounded-lg transition-colors"
                         title="Acciones"
+                        aria-label={`Acciones de la orden ${row.orden_trabajo}`}
                       >
                         <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
                           <circle cx="10" cy="4" r="1.5" />
@@ -1836,6 +2291,32 @@ export default function DespachoTableClient() {
                       )}
                     </td>
                   </tr>
+                  {esPosibleDup && (
+                    <tr className="border-b border-[#F1F5F9]" style={{ background: '#FFF5F5', boxShadow: 'inset 3px 0 0 #DC2626' }}>
+                      <td colSpan={mostrarAlerta ? 12 : 11} style={{ padding: '0 20px 14px 56px' }}>
+                        <div className="flex flex-wrap items-center gap-3">
+                          <p className="mr-auto text-[13px] leading-relaxed text-[#7F1D1D]" style={{ maxWidth: 760 }}>
+                            Parece repetir la orden <b>#{relDup}</b>, gestionada hace 2 a 3 semanas en el mismo contrato. Tipo 12137 y la observación dice «enmallamiento».
+                          </p>
+                          <button
+                            type="button"
+                            onClick={() => marcarNoDuplicada(row)}
+                            className="min-h-[44px] px-4 rounded-lg border border-[#CBD5E1] bg-white text-sm font-medium text-[#0F2A5C] hover:bg-gray-50"
+                          >
+                            No es duplicada
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setConfirmDup({ ordenes: [row] })}
+                            className="min-h-[44px] px-4 rounded-lg bg-[#B91C1C] text-sm font-semibold text-white hover:bg-[#991B1B]"
+                          >
+                            Cerrar como duplicada
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                  </React.Fragment>
                   );
                 })
               )}
@@ -1843,73 +2324,101 @@ export default function DespachoTableClient() {
           </table>
         </div>
 
-        {/* ── Paginación ── */}
-        {totalCount > 0 && (() => {
-          const totalPages = Math.ceil(totalCount / PAGE_SIZE);
-          const from = (currentPage - 1) * PAGE_SIZE + 1;
-          const to = Math.min(currentPage * PAGE_SIZE, totalCount);
-
-          // Generar números de página visibles
-          const pages: (number | '...')[] = [];
-          if (totalPages <= 7) {
-            for (let i = 1; i <= totalPages; i++) pages.push(i);
-          } else {
-            pages.push(1);
-            if (currentPage > 3) pages.push('...');
-            for (let i = Math.max(2, currentPage - 1); i <= Math.min(totalPages - 1, currentPage + 1); i++) {
-              pages.push(i);
-            }
-            if (currentPage < totalPages - 2) pages.push('...');
-            pages.push(totalPages);
-          }
-
-          return (
-            <div className="flex items-center justify-between pt-4 mt-4 border-t border-gray-100">
-              <p className="text-sm text-gray-500">
-                Mostrando <span className="font-medium text-gray-700">{from}</span> a{' '}
-                <span className="font-medium text-gray-700">{to}</span> de{' '}
-                <span className="font-medium text-gray-700">{totalCount}</span> órdenes
-              </p>
-              <div className="flex items-center gap-1">
-                {/* Flecha anterior */}
+        {/* ── Pie de la lista ── */}
+        {totalCount > 0 && (
+          <div ref={footerRef} className="flex flex-wrap items-center justify-between gap-3 pt-4 mt-4 border-t border-gray-100">
+            <p className="text-sm text-gray-500" aria-live="polite">
+              Mostrando <span className="font-medium tabular-nums text-gray-700">{ordenes.length}</span> de{' '}
+              <span className="font-medium tabular-nums text-gray-700">{totalCount}</span> órdenes
+              {selectedOrdenes.length > 0 && (
+                <>
+                  {' · '}
+                  <span className="font-medium tabular-nums text-[#1D4ED8]">{selectedOrdenes.length}</span> seleccionadas
+                </>
+              )}
+            </p>
+            <div className="flex items-center gap-2">
+              {ordenes.length < totalCount && limite < MAX_FILAS && (
                 <button
-                  onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
-                  disabled={currentPage === 1}
-                  className="px-2.5 py-1.5 text-sm rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                  type="button"
+                  onClick={() => setLimite(l => Math.min(l + LOTE, MAX_FILAS))}
+                  disabled={loadingOrdenes}
+                  className="min-h-[44px] px-4 rounded-lg border border-[#CBD5E1] bg-white text-sm font-medium text-[#0F2A5C] hover:bg-gray-50 disabled:opacity-50"
                 >
-                  ←
+                  {loadingOrdenes ? 'Cargando…' : `Cargar ${Math.min(LOTE, totalCount - ordenes.length)} más`}
                 </button>
-                {/* Números */}
-                {pages.map((p, i) =>
-                  p === '...' ? (
-                    <span key={`dots-${i}`} className="px-2 py-1 text-sm text-gray-400">...</span>
-                  ) : (
-                    <button
-                      key={p}
-                      onClick={() => setCurrentPage(p as number)}
-                      className={`px-3 py-1.5 text-sm rounded-lg border transition-colors ${
-                        currentPage === p
-                          ? 'bg-blue-600 text-white border-blue-600 font-semibold'
-                          : 'border-gray-200 text-gray-700 hover:bg-gray-50'
-                      }`}
-                    >
-                      {p}
-                    </button>
-                  )
-                )}
-                {/* Flecha siguiente */}
+              )}
+              {ordenes.length >= 20 && (
                 <button
-                  onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
-                  disabled={currentPage === totalPages}
-                  className="px-2.5 py-1.5 text-sm rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                  type="button"
+                  onClick={volverArriba}
+                  className="min-h-[44px] px-4 rounded-lg border border-transparent bg-transparent text-sm font-medium text-[#64748B] hover:text-[#0F2A5C]"
                 >
-                  →
+                  ↑ Volver arriba
                 </button>
-              </div>
+              )}
             </div>
-          );
-        })()}
+            {ordenes.length >= MAX_FILAS && totalCount > MAX_FILAS && (
+              <p className="w-full text-sm text-[#64748B]">
+                Hay {totalCount - MAX_FILAS} órdenes más. Usa los filtros de las columnas (técnico, localidad, estado, SLA…) para acotar la lista.
+              </p>
+            )}
+          </div>
+        )}
       </div>
+
+      {confirmDup && (
+        <div
+          style={{ position: 'fixed', inset: 0, zIndex: 70, background: 'rgba(15,42,92,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}
+          onClick={() => { if (!cerrandoDup) setConfirmDup(null); }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="confirm-dup-titulo"
+            onClick={(e) => e.stopPropagation()}
+            style={{ width: '100%', maxWidth: 560, maxHeight: '90vh', display: 'flex', flexDirection: 'column', background: '#fff', borderRadius: 14, boxShadow: '0 24px 60px rgba(15,42,92,0.25)', overflow: 'hidden' }}
+          >
+            <div style={{ padding: '20px 24px 12px' }}>
+              <h2 id="confirm-dup-titulo" style={{ margin: 0, fontSize: 18, fontWeight: 600, color: '#0F2A5C' }}>
+                {confirmDup.ordenes.length === 1 ? '¿Cerrar 1 orden como duplicada?' : `¿Cerrar ${confirmDup.ordenes.length} órdenes como duplicadas?`}
+              </h2>
+              <p style={{ margin: '8px 0 0', fontSize: 14, color: '#475569', lineHeight: 1.5 }}>
+                Cada una se cierra como <b>Efectiva</b> con la fecha de hoy y las fotos de la orden que ya se gestionó. Queda registrada en su historial y en rojo en Auditoría.
+              </p>
+            </div>
+            <ul style={{ listStyle: 'none', margin: 0, padding: '0 24px', overflowY: 'auto', flex: '1 1 auto' }}>
+              {confirmDup.ordenes.map(o => (
+                <li key={o.orden_trabajo} style={{ display: 'flex', justifyContent: 'space-between', gap: 12, padding: '10px 0', borderTop: '1px solid #EEF2F8', fontSize: 14, fontVariantNumeric: 'tabular-nums' }}>
+                  <span><b>{o.orden_trabajo}</b> <span style={{ color: '#64748B' }}>· contrato {o.contrato}</span></span>
+                  <span style={{ color: '#B91C1C', fontWeight: 600 }}>de #{String(o.orden_relacionada || '')}</span>
+                </li>
+              ))}
+            </ul>
+            <p style={{ margin: 0, padding: '12px 24px 0', fontSize: 13, color: '#64748B' }}>
+              Estas órdenes cuentan como «cerradas» en el Dashboard aunque no las atienda un técnico.
+            </p>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12, padding: '16px 24px 20px' }}>
+              <button
+                type="button"
+                disabled={cerrandoDup}
+                onClick={() => setConfirmDup(null)}
+                style={{ minHeight: 44, padding: '0 18px', borderRadius: 10, border: '1px solid #CBD5E1', background: '#fff', color: '#0F2A5C', fontSize: 14, fontWeight: 500, cursor: 'pointer' }}
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={cerrandoDup}
+                onClick={confirmarCierreDuplicadas}
+                style={{ minHeight: 44, padding: '0 20px', borderRadius: 10, border: 0, background: '#B91C1C', color: '#fff', fontSize: 14, fontWeight: 600, cursor: cerrandoDup ? 'wait' : 'pointer', opacity: cerrandoDup ? 0.7 : 1 }}
+              >
+                {cerrandoDup ? 'Cerrando…' : confirmDup.ordenes.length === 1 ? 'Cerrar la orden' : `Cerrar las ${confirmDup.ordenes.length} órdenes`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Panel flotante de asignación masiva */}
       {selectedOrdenes.length > 0 && <div style={{ height: 96 }} aria-hidden="true" />}

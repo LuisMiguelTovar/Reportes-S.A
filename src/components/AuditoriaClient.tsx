@@ -67,6 +67,9 @@ export default function AuditoriaClient() {
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [tecnicoFilter, setTecnicoFilter] = useState('Todos los Técnicos');
   const [estadoFilter, setEstadoFilter] = useState('Todos los Estados');
+  const [origenFilter, setOrigenFilter] = useState('Todas');
+  const soloDuplicadasRef = useRef(false);
+  soloDuplicadasRef.current = origenFilter === 'Duplicadas';
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [reporteOrden, setReporteOrden] = useState<Orden | null>(null);
@@ -342,6 +345,9 @@ export default function AuditoriaClient() {
     if (estado !== 'Todos los Estados') {
       query.eq('estado', estado);
     }
+    if (soloDuplicadasRef.current) {
+      query.eq('alerta_orden', 'DUPLICADA_CERRADA');
+    }
     if (tecnico !== 'Todos los Técnicos') {
       const tecnicoObj = tecnicosRef.current.find(t => t.nombre === tecnico);
       if (tecnicoObj) {
@@ -382,7 +388,7 @@ export default function AuditoriaClient() {
     }
     setLoadingOrdenes(false);
     setIsInitialLoad(false);
-  }, [buildFilteredQuery, debouncedSearch, tecnicoFilter, estadoFilter, startDate, endDate, currentPage]);
+  }, [buildFilteredQuery, debouncedSearch, tecnicoFilter, estadoFilter, origenFilter, startDate, endDate, currentPage]);
 
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedSearch(searchTerm), 400);
@@ -392,7 +398,7 @@ export default function AuditoriaClient() {
   useEffect(() => {
     setCurrentPage(1);
     setSelectedOrders([]);
-  }, [debouncedSearch, tecnicoFilter, estadoFilter, startDate, endDate]);
+  }, [debouncedSearch, tecnicoFilter, estadoFilter, origenFilter, startDate, endDate]);
 
   useEffect(() => {
     fetchOrdenes();
@@ -838,13 +844,14 @@ export default function AuditoriaClient() {
     { id: 'mes', texto: 'Este mes', desde: primerDiaMes, hasta: hoyISO },
     { id: 'mesant', texto: 'Mes anterior', desde: primerDiaMesAnterior, hasta: ultimoDiaMesAnterior },
   ];
-  const hayFiltros = !!searchTerm || !!startDate || !!endDate || tecnicoFilter !== 'Todos los Técnicos' || estadoFilter !== 'Todos los Estados';
+  const hayFiltros = !!searchTerm || !!startDate || !!endDate || tecnicoFilter !== 'Todos los Técnicos' || estadoFilter !== 'Todos los Estados' || origenFilter !== 'Todas';
   const limpiarFiltros = () => {
     setSearchTerm('');
     setStartDate('');
     setEndDate('');
     setTecnicoFilter('Todos los Técnicos');
     setEstadoFilter('Todos los Estados');
+    setOrigenFilter('Todas');
   };
   const estiloCampoFiltro: React.CSSProperties = {
     boxSizing: 'border-box', width: '100%', minHeight: 44, padding: '0 12px', border: '1px solid #CBD5E1',
@@ -953,6 +960,19 @@ export default function AuditoriaClient() {
               onChange={setEstadoFilter}
             />
           </div>
+          <div style={{ width: 170 }}>
+            <span style={estiloEtiquetaFiltro}>Origen</span>
+            <FiltroLista
+              etiqueta="Origen"
+              textoBoton="Todas"
+              value={origenFilter}
+              ocupaTodo
+              valorVacio="Todas"
+              textoVacio="Todas las órdenes"
+              opciones={[{ value: 'Duplicadas', label: 'Duplicadas cerradas' }]}
+              onChange={setOrigenFilter}
+            />
+          </div>
         </div>
 
         <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginTop: 14, paddingTop: 14, borderTop: '1px solid #EEF2F8' }}>
@@ -1023,7 +1043,11 @@ export default function AuditoriaClient() {
                 </tr>
               ) : (
                 filteredData.map((row) => (
-                    <tr key={row.orden_trabajo} className="border-b border-gray-100 hover:bg-gray-50 transition-colors">
+                    <tr
+                      key={row.orden_trabajo}
+                      className={`border-b transition-colors ${row.alerta_orden === 'DUPLICADA_CERRADA' ? 'border-red-100 bg-red-50 hover:bg-red-100/70' : 'border-gray-100 hover:bg-gray-50'}`}
+                      style={row.alerta_orden === 'DUPLICADA_CERRADA' ? { boxShadow: 'inset 3px 0 0 #DC2626' } : undefined}
+                    >
                       <td className="py-2 px-3 text-center">
                         <input
                           type="checkbox"
@@ -1051,6 +1075,11 @@ export default function AuditoriaClient() {
                         <span className={`px-2 py-1 rounded-full text-xs font-semibold ${row.estado === 'Cancelada' ? 'bg-red-50 text-red-700 border border-red-200' : 'bg-green-50 text-green-700 border border-green-200'}`}>
                           {row.estado}
                         </span>
+                        {row.alerta_orden === 'DUPLICADA_CERRADA' && (
+                          <p className="mt-1 text-[12px] font-semibold text-red-700 tabular-nums">
+                            Duplicada de #{String(row.orden_relacionada || '')}
+                          </p>
+                        )}
                       </td>
                       <td className="py-2 px-3 text-gray-600">{getTecnicoNombre(row.id_tecnico_asignado)}</td>
                       <td className="py-2 px-3 text-center">
@@ -1256,6 +1285,11 @@ export default function AuditoriaClient() {
                   <p style={rpt.etiqueta}>Dirección</p>
                   <p style={rpt.valor}>{reporteOrden.direccion || '—'}</p>
                   <p style={{ margin: '2px 0 0', fontSize: 13, color: '#64748B' }}>Barrio {nombreBarrio(reporteOrden.barrio)}</p>
+                  {reporteOrden.alerta_orden === 'DUPLICADA_CERRADA' && (
+                    <p style={{ margin: '8px 0 0', fontSize: 13, fontWeight: 600, color: '#B91C1C' }}>
+                      Cerrada como duplicada de la orden #{String(reporteOrden.orden_relacionada || '')}
+                    </p>
+                  )}
                 </div>
               </div>
 
