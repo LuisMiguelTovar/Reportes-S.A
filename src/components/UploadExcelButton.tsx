@@ -265,6 +265,7 @@ const mapHtmlFieldsToOrden = (fields: Record<string, string>) => {
     hora_acordada: horaAcordada,
     alerta_orden: null as string | null,       // 'DOBLE' | 'POSIBLE_DUPLICADA' | null
     orden_relacionada: null as string | null,  // orden con el mismo contrato que originó la alerta
+    cobro_hl: normalizarTexto(observacion).includes('ot para cobro hl'), // observación "OT PARA COBRO HL"
   };
 };
 
@@ -398,8 +399,13 @@ export default function UploadExcelButton({ onUploadSuccess }: UploadExcelButton
             );
 
             if (previas.length > 0) {
-              o.alerta_orden = 'DOBLE';
-              o.orden_relacionada = previas[0].orden_trabajo;
+              // "Orden doble" solo si el contrato tiene otra orden VIVA (Pendiente o Programada).
+              // Si las otras ya están cerradas (Efectiva o Cancelada) no es doble.
+              const viva = previas.find(p => p.estado === 'Pendiente' || p.estado === 'Programada');
+              if (viva) {
+                o.alerta_orden = 'DOBLE';
+                o.orden_relacionada = viva.orden_trabajo;
+              }
 
               // Caso especial: tipo de trabajo 12137 + "enmallamiento" + orden cerrada hace 2-3 semanas
               const codigoTipo = (String(o.descripcion_del_trabajo || '').match(/^\s*(\d+)/) || [])[1] || '';
@@ -420,8 +426,8 @@ export default function UploadExcelButton({ onUploadSuccess }: UploadExcelButton
 
               if (o.alerta_orden === 'POSIBLE_DUPLICADA') {
                 resumenPosibles.push(`${numero} (contrato ${contrato}, cerrada la ${o.orden_relacionada})`);
-              } else {
-                resumenDobles.push(`${numero} (contrato ${contrato}, ya existe la ${o.orden_relacionada})`);
+              } else if (o.alerta_orden === 'DOBLE') {
+                resumenDobles.push(`${numero} (contrato ${contrato}, ya está viva la ${o.orden_relacionada})`);
               }
             }
 

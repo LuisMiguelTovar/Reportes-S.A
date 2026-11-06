@@ -35,6 +35,8 @@ type Orden = {
   observacion_solicitud?: string;
   fecha_cierre?: string;
   numero_cuotas?: number | null;
+  alerta_orden?: string | null;
+  cobro_hl?: boolean | null;
   [key: string]: unknown;
 };
 
@@ -159,7 +161,8 @@ function aplicarFiltroAlerta(q: any, sel: Set<string> | null) {
   if (!sel) return;
   const partes: string[] = [];
   sel.forEach(v => {
-    if (v === 'SIN_ALERTA') partes.push('alerta_orden.is.null');
+    if (v === 'SIN_ALERTA') partes.push('and(alerta_orden.is.null,cobro_hl.eq.false)');
+    else if (v === 'COBRO_HL') partes.push('cobro_hl.eq.true');
     else partes.push(`alerta_orden.eq.${v}`);
   });
   if (partes.length > 0) q.or(partes.join(','));
@@ -205,6 +208,55 @@ function ExcelColumnFilter({
     });
   };
 
+  const aplicar = () => {
+    if (!hasInteracted && search.trim() !== '') {
+      // Solo buscó, no tocó ningún checkbox: aplica exactamente lo visible.
+      onApply(new Set(filteredOptions.map((o) => o.value)));
+    } else if (checked.size === allValues.length) {
+      onApply(null); // Todo marcado = sin filtro
+    } else {
+      onApply(new Set(checked));
+    }
+  };
+
+  // Teclado: Esc cancela, Enter aplica, ↑/↓ recorren buscador y casillas, Espacio marca (nativo en la casilla).
+  const usoTeclado = useRef(false);
+  const elementoPrevio = useRef<HTMLElement | null>(
+    typeof document !== 'undefined' ? (document.activeElement as HTMLElement | null) : null
+  );
+  useEffect(() => {
+    const previo = elementoPrevio.current;
+    // Al cerrar con el teclado, el foco vuelve a la flechita que abrió el panel.
+    return () => { if (usoTeclado.current && previo && previo.isConnected) previo.focus(); };
+  }, []);
+
+  const manejarTeclas = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const destino = e.target as HTMLElement;
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      usoTeclado.current = true;
+      onCancel();
+      return;
+    }
+    if (e.key === 'Enter') {
+      usoTeclado.current = true;
+      if (destino.tagName === 'BUTTON') return; // Cancelar / Aceptar hacen su propia acción
+      e.preventDefault();
+      aplicar();
+      return;
+    }
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      const campos = Array.from(e.currentTarget.querySelectorAll<HTMLInputElement>('input'));
+      const i = campos.indexOf(destino as HTMLInputElement);
+      if (i === -1) return;
+      const siguiente = campos[e.key === 'ArrowDown' ? Math.min(i + 1, campos.length - 1) : Math.max(i - 1, 0)];
+      e.preventDefault();
+      siguiente?.focus();
+      siguiente?.scrollIntoView({ block: 'nearest' });
+    }
+  };
+
   const toggleOne = (value: string) => {
     setHasInteracted(true);
     setChecked(prev => {
@@ -217,6 +269,9 @@ function ExcelColumnFilter({
   return (
     <div
       ref={panelRef}
+      role="dialog"
+      aria-label="Filtro de columna"
+      onKeyDown={manejarTeclas}
       className="fixed z-50 bg-white border border-gray-200 rounded-lg shadow-lg p-2 normal-case font-normal text-gray-700"
       style={{ top: position.top, left: position.left, width: '240px' }}
     >
@@ -228,7 +283,7 @@ function ExcelColumnFilter({
         onChange={(e) => setSearch(e.target.value)}
         className="w-full border border-gray-200 rounded-md px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 mb-2"
       />
-      <label className="flex items-center gap-2 px-1 py-1 text-xs font-semibold text-gray-700 border-b border-gray-100 mb-1 cursor-pointer">
+      <label className="flex items-center gap-2 px-1 py-1 text-xs font-semibold text-gray-700 border-b border-gray-100 mb-1 cursor-pointer focus-within:bg-blue-50 focus-within:ring-1 focus-within:ring-blue-300 rounded">
         <input type="checkbox" checked={allFilteredChecked} onChange={toggleAllFiltered} className="rounded" />
         (Seleccionar todo)
       </label>
@@ -237,7 +292,7 @@ function ExcelColumnFilter({
           <p className="text-xs text-gray-400 px-1 py-2">Sin resultados</p>
         ) : (
           filteredOptions.map(opt => (
-            <label key={opt.value} className="flex items-center gap-2 px-1 py-1 text-xs text-gray-600 hover:bg-gray-50 rounded cursor-pointer">
+            <label key={opt.value} className="flex items-center gap-2 px-1 py-1 text-xs text-gray-600 hover:bg-gray-50 focus-within:bg-blue-50 focus-within:ring-1 focus-within:ring-blue-300 rounded cursor-pointer">
               <input type="checkbox" checked={checked.has(opt.value)} onChange={() => toggleOne(opt.value)} className="rounded" />
               <span className="truncate">{opt.label}</span>
             </label>
@@ -245,26 +300,18 @@ function ExcelColumnFilter({
         )}
       </div>
       <div className="flex items-center justify-between gap-2 pt-2 mt-1 border-t border-gray-100">
-        <button type="button" onClick={onCancel} className="text-xs text-gray-500 hover:text-gray-700 px-2 py-1">
+        <button type="button" onClick={onCancel} className="text-xs text-gray-500 hover:text-gray-700 px-2 py-1 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
           Cancelar
         </button>
         <button
           type="button"
-          onClick={() => {
-            if (!hasInteracted && search.trim() !== '') {
-              // Solo buscó, no tocó ningún checkbox: aplica exactamente lo visible.
-              onApply(new Set(filteredOptions.map((o) => o.value)));
-            } else if (checked.size === allValues.length) {
-              onApply(null); // Todo marcado = sin filtro
-            } else {
-              onApply(new Set(checked));
-            }
-          }}
-          className="text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-md px-3 py-1.5"
+          onClick={aplicar}
+          className="text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-md px-3 py-1.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-1 focus-visible:ring-blue-500"
         >
           Aceptar
         </button>
       </div>
+      <p className="px-1 pt-1.5 text-[10px] leading-tight text-gray-400">↑↓ moverse · Espacio marcar · Enter aplicar · Esc cancelar</p>
     </div>
   );
 }
@@ -393,6 +440,7 @@ export default function DespachoTableClient() {
   const [limite, setLimite] = useState(LOTE);
   const [totalCount, setTotalCount] = useState(0);
   const listaRef = useRef<HTMLDivElement>(null);
+  const peticionRef = useRef(0); // número de la última consulta de lista; las anteriores se descartan
   const volverArriba = useCallback(() => {
     listaRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
   }, []);
@@ -600,6 +648,7 @@ export default function DespachoTableClient() {
 
   // ── Fetch órdenes — paginado server-side ──
   const fetchOrdenes = useCallback(async () => {
+    const miPeticion = ++peticionRef.current;
     setLoadingOrdenes(true);
     setErrorOrdenes(null);
 
@@ -611,6 +660,7 @@ export default function DespachoTableClient() {
     query.range(0, limite - 1);
 
     const { data, error, count } = await query;
+    if (miPeticion !== peticionRef.current) return; // llegó una consulta más nueva; esta se ignora
 
     if (error) {
       console.error('Error al cargar órdenes:', error);
@@ -643,7 +693,9 @@ export default function DespachoTableClient() {
       setConteoEstados({ todos, pendiente, programada });
     })();
     return () => { cancelado = true; };
-  }, [buildFilteredQuery, debouncedSearch, localidadFilter, descripcionFilter, fechaFilter, tecnicoFilter, ordenSelected, contratoSelected, ubicacionSelected, trabajoSelected, estadoColSelected, slaSelected, fechaProgSelected, fechaAsigSelected, tecnicoColSelected, alertaSelected, ordenes]);
+  // Se recalculan cuando llega una lista nueva (los filtros ya disparan esa lista); así no se duplican las consultas.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ordenes]);
 
   type FilaFiltroOpciones = {
     orden_trabajo: string;
@@ -1267,7 +1319,7 @@ export default function DespachoTableClient() {
   }, [ordenes.length, totalCount, conteoDuplicadas, alertaSelected, loadingOrdenes]);
 
   // La columna "Alerta" solo se muestra si hay alguna alerta (cargada o contada) o si el filtro está activo.
-  const mostrarAlerta = alertaSelected !== null || conteoDuplicadas > 0 || ordenes.some(o => !!o.alerta_orden);
+  const mostrarAlerta = alertaSelected !== null || conteoDuplicadas > 0 || ordenes.some(o => !!o.alerta_orden || !!o.cobro_hl);
 
   // ── Posibles duplicadas ──
   useEffect(() => {
@@ -1489,11 +1541,13 @@ export default function DespachoTableClient() {
             : alertaSelected.size === 2 && alertaSelected.has('POSIBLE_DUPLICADA') && alertaSelected.has('DOBLE') ? 'con'
             : alertaSelected.size === 1 && alertaSelected.has('POSIBLE_DUPLICADA') ? 'dup'
             : alertaSelected.size === 1 && alertaSelected.has('DOBLE') ? 'dob'
+            : alertaSelected.size === 1 && alertaSelected.has('COBRO_HL') ? 'cob'
             : null;
           const textoAlerta =
             modoAlerta === 'con' ? 'Con alerta'
             : modoAlerta === 'dup' ? 'Duplicada'
             : modoAlerta === 'dob' ? 'Doble'
+            : modoAlerta === 'cob' ? 'Cobro HL'
             : `${alertaSelected?.size ?? 0} tipos`;
           const nombreTecnico = tecnicoFilter === 'Sin asignar'
             ? 'Sin asignar'
@@ -1703,7 +1757,8 @@ export default function DespachoTableClient() {
                             id === 'todas' ? null
                             : id === 'con' ? new Set(['POSIBLE_DUPLICADA', 'DOBLE'])
                             : id === 'dup' ? new Set(['POSIBLE_DUPLICADA'])
-                            : new Set(['DOBLE'])
+                            : id === 'dob' ? new Set(['DOBLE'])
+                            : new Set(['COBRO_HL'])
                           )
                         }
                         opciones={[
@@ -1711,6 +1766,7 @@ export default function DespachoTableClient() {
                           { id: 'con', texto: 'Con alerta' },
                           { id: 'dup', texto: 'Duplicada' },
                           { id: 'dob', texto: 'Doble' },
+                          { id: 'cob', texto: 'Cobro HL' },
                         ]}
                       />
                     </div>
@@ -1975,6 +2031,7 @@ export default function DespachoTableClient() {
                       options={[
                         { value: 'POSIBLE_DUPLICADA', label: 'Posible duplicada' },
                         { value: 'DOBLE', label: 'Orden doble' },
+                        { value: 'COBRO_HL', label: 'Cobro HL' },
                         { value: 'SIN_ALERTA', label: 'Sin alerta' },
                       ]}
                       selected={alertaSelected}
@@ -2206,7 +2263,19 @@ export default function DespachoTableClient() {
                           </p>
                         </div>
                       ) : (
-                        <span className="text-[#CBD5E1]" aria-label="Sin alerta">–</span>
+                        !row.cobro_hl ? <span className="text-[#CBD5E1]" aria-label="Sin alerta">–</span> : null
+                      )}
+                      {row.cobro_hl && (
+                        <div className={row.alerta_orden ? 'mt-1.5' : ''}>
+                          <span
+                            className="inline-flex items-center gap-1.5 pl-2 pr-2.5 py-0.5 rounded-full border text-[12px] font-semibold whitespace-nowrap"
+                            style={{ background: '#EEF2FF', borderColor: '#C7D2FE', color: '#3730A3' }}
+                            title="La observación dice «OT para cobro HL»"
+                          >
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 2v20M17 6H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6" /></svg>
+                            Cobro HL
+                          </span>
+                        </div>
                       )}
                     </td>
                     )}
