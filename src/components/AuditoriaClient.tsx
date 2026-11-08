@@ -102,6 +102,54 @@ const partirTipo = (s?: string | null) => {
 
 export default function AuditoriaClient() {
   const { area } = useArea();
+
+  // Causales de Redes Internas (RI): a diferencia de los 4 causales fijos de
+  // Asociados (causalLabelPorCodigo arriba), los de RI viven en la tabla
+  // `causales` de Supabase y pueden cambiar — por eso se cargan en tiempo de
+  // ejecución en vez de tenerlos hardcodeados aquí.
+  const [causalesRiMap, setCausalesRiMap] = useState<Record<string, string>>({});
+  const cargarCausalesRi = useCallback(() => {
+    supabase
+      .from('causales')
+      .select('codigo, nombre')
+      .eq('area_codigo', 'RI')
+      .then(({ data, error }) => {
+        if (error) {
+          console.warn('[Auditoría] No se pudieron cargar los causales RI:', error.message);
+          return;
+        }
+        if (!data) return;
+        const mapa: Record<string, string> = {};
+        data.forEach((c: { codigo: string; nombre: string }) => {
+          mapa[String(c.codigo)] = c.nombre;
+        });
+        setCausalesRiMap(mapa);
+      });
+  }, []);
+  useEffect(() => {
+    cargarCausalesRi();
+  }, [cargarCausalesRi]);
+
+  // Mapa combinado: causales fijos de Asociados + causales de RI cargados
+  // desde Supabase. Se usa en vez de `causalLabelPorCodigo` directo para que
+  // el nombre de un causal RI (ej. "RI-02 → Cliente no contactado") se
+  // muestre en vez de repetir el código.
+  const causalLabelCombinado = useMemo(
+    () => ({ ...causalLabelPorCodigo, ...causalesRiMap }),
+    [causalesRiMap]
+  );
+
+  // Texto del causal para la observación. Los de Redes Internas (RI-xx) se
+  // muestran solo con su nombre; los de Asociados conservan "código-nombre".
+  const textoCausalObservacion = useCallback(
+    (codigo: string) => {
+      const label = causalLabelCombinado[codigo];
+      if (!label) return codigo;
+      return codigo.startsWith('RI-') ? label : `${codigo}-${label}`;
+    },
+    [causalLabelCombinado]
+  );
+
   const [searchTerm, setSearchTerm] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [filtrosCol, setFiltrosCol] = useState<FiltrosCol>(FILTROS_COL_VACIOS);
@@ -350,7 +398,7 @@ export default function AuditoriaClient() {
 
     // Motivo de no ejecución (solo órdenes incumplidas): "9565-Inmueble solo"
     const causalEntrada = (h.estado === 'Cancelada' || h.estado === 'Incumplida') && h.causal_codigo
-      ? (causalLabelPorCodigo[String(h.causal_codigo)] ? `${h.causal_codigo}-${causalLabelPorCodigo[String(h.causal_codigo)]}` : String(h.causal_codigo))
+      ? textoCausalObservacion(String(h.causal_codigo))
       : '';
 
     if (h.comentario) {
@@ -366,8 +414,8 @@ export default function AuditoriaClient() {
     }
 
     if (h.estado === 'Cancelada') {
-      const causalTexto = h.causal_codigo && causalLabelPorCodigo[h.causal_codigo]
-        ? `${h.causal_codigo}-${causalLabelPorCodigo[h.causal_codigo]}`
+      const causalTexto = h.causal_codigo && causalLabelCombinado[h.causal_codigo]
+        ? textoCausalObservacion(String(h.causal_codigo))
         : (h.causal_codigo || '');
       return `${fecha} · Técnico: ${tecnico}${causalTexto ? ` / Orden incumplida - Causal: ${causalTexto}` : ' / Orden incumplida'}`;
     }
@@ -736,13 +784,11 @@ export default function AuditoriaClient() {
     [itemsEditables]
   );
 
-  // Motivo de no ejecución de la orden abierta: el de la entrada de historial más reciente que lo tenga
-  const causalCierre = useMemo(() => {
-    const conMotivo = [...historialAuditoria].reverse().find((h: any) => h?.causal_codigo);
-    if (!conMotivo) return null;
-    const codigo = String(conMotivo.causal_codigo);
-    return { codigo, texto: causalLabelPorCodigo[codigo] ?? codigo };
-  }, [historialAuditoria]);
+  // Cada vez que se abre un reporte se vuelve a leer la tabla `causales`:
+  // si la página llevaba horas abierta, no conocía los causales creados después.
+  useEffect(() => {
+    if (reporteOrden) cargarCausalesRi();
+  }, [reporteOrden?.orden_trabajo, cargarCausalesRi]);
 
   // Todas las fotos de la orden abierta (historial + urls_fotos), sin repetidas
   const fotosOrden = useMemo(() => {
@@ -983,8 +1029,8 @@ export default function AuditoriaClient() {
 
     const exportData = allFiltered.map((row: any, idx: number) => {
       const cierre = cierrePorOrden[row.orden_trabajo];
-      const causalTexto = cierre?.causal_codigo && causalLabelPorCodigo[cierre.causal_codigo]
-        ? `${cierre.causal_codigo}-${causalLabelPorCodigo[cierre.causal_codigo]}`
+      const causalTexto = cierre?.causal_codigo && causalLabelCombinado[cierre.causal_codigo]
+        ? `${cierre.causal_codigo}-${causalLabelCombinado[cierre.causal_codigo]}`
         : '';
       const badgeLabel = row.estado === 'Cancelada' ? 'Incumplida' : row.estado;
 
@@ -993,7 +1039,10 @@ export default function AuditoriaClient() {
         const fechaTexto = cierre.fecha
           ? new Date(cierre.fecha).toLocaleDateString('es-CO', { timeZone: 'America/Bogota' })
           : '';
-        comentarioCompleto = `${fechaTexto} · ${badgeLabel}${causalTexto ? ` (${causalTexto})` : ''} · ${cierre.autorNombre || ''} / ${cierre.comentario}`;
+        const causalObs = cierre.causal_codigo && causalLabelCombinado[cierre.causal_codigo]
+          ? textoCausalObservacion(String(cierre.causal_codigo))
+          : '';
+        comentarioCompleto = `${fechaTexto} · ${badgeLabel}${causalObs ? ` (${causalObs})` : ''} · ${cierre.autorNombre || ''} / ${cierre.comentario}`;
       }
 
       const fila: Record<string, string> = {
@@ -2000,12 +2049,6 @@ export default function AuditoriaClient() {
                   <p style={rpt.etiqueta}>Dirección</p>
                   <p style={rpt.valor}>{reporteOrden.direccion || '—'}</p>
                   <p style={{ margin: '2px 0 0', fontSize: 13, color: '#64748B' }}>Barrio {nombreBarrio(reporteOrden.barrio)}</p>
-                  {reporteOrden.estado === 'Cancelada' && causalCierre && (
-                    <p style={{ margin: '8px 0 0', fontSize: 13, fontWeight: 600, color: '#B91C1C' }}>
-                      <span style={{ color: '#64748B', fontWeight: 500 }}>Motivo de no ejecución: </span>
-                      {causalCierre.texto} <span style={{ color: '#94A3B8', fontWeight: 400, fontVariantNumeric: 'tabular-nums' }}>({causalCierre.codigo})</span>
-                    </p>
-                  )}
                   {reporteOrden.alerta_orden === 'DUPLICADA_CERRADA' && (
                     <p style={{ margin: '8px 0 0', fontSize: 13, fontWeight: 600, color: '#B91C1C' }}>
                       Cerrada como duplicada de la orden #{String(reporteOrden.orden_relacionada || '')}
@@ -2257,7 +2300,7 @@ export default function AuditoriaClient() {
                               {(h.estado === 'Cancelada' || h.estado === 'Incumplida') && h.causal_codigo && (
                                 <p style={{ margin: '0 0 8px', fontSize: 13, fontWeight: 600, color: '#B91C1C' }}>
                                   <span style={{ color: '#64748B', fontWeight: 500 }}>Motivo de no ejecución: </span>
-                                  {causalLabelPorCodigo[String(h.causal_codigo)] ?? String(h.causal_codigo)}
+                                  {causalLabelCombinado[String(h.causal_codigo)] ?? String(h.causal_codigo)}
                                   <span style={{ marginLeft: 6, color: '#94A3B8', fontWeight: 400, fontVariantNumeric: 'tabular-nums' }}>({String(h.causal_codigo)})</span>
                                 </p>
                               )}
