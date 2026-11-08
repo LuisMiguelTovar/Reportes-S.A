@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useState } from 'react';
-import { supabase } from '@/lib/supabase';
+import { supabase, isInvalidRefreshTokenError } from '@/lib/supabase';
 
 export default function UserProfile() {
   const [userName, setUserName] = useState<string>('Miguel (Admin)');
@@ -8,11 +8,28 @@ export default function UserProfile() {
 
   useEffect(() => {
     const fetchUser = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (session?.user) {
-        const name = session.user.user_metadata?.full_name || session.user.email?.split('@')[0] || 'Miguel (Admin)';
-        setUserName(name);
-        setInitial(name.charAt(0).toUpperCase());
+      try {
+        const { data, error } = await supabase.auth.getSession();
+        if (error && isInvalidRefreshTokenError(error)) {
+          await supabase.auth.signOut();
+          if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
+            window.location.replace('/login');
+          }
+          return;
+        }
+        const session = data?.session;
+        if (session?.user) {
+          const name = session.user.user_metadata?.full_name || session.user.email?.split('@')[0] || 'Miguel (Admin)';
+          setUserName(name);
+          setInitial(name.charAt(0).toUpperCase());
+        }
+      } catch (err) {
+        if (isInvalidRefreshTokenError(err)) {
+          await supabase.auth.signOut();
+          if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
+            window.location.replace('/login');
+          }
+        }
       }
     };
     fetchUser();

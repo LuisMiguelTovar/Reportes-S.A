@@ -9,6 +9,7 @@ import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
 import EquipoTrabajoEditor from '@/components/EquipoTrabajoEditor';
 import FiltroLista from '@/components/FiltroLista';
+import ExcelColumnFilter, { ColumnTextFilter, ColumnDateFilter } from '@/components/ExcelColumnFilter';
 import { useArea } from '@/components/AreaProvider';
 
 interface ItemReporte {
@@ -61,11 +62,91 @@ const causalLabelPorCodigo: Record<string, string> = {
   '3357': 'Trabajo no ejecutado',
 };
 
+type FiltrosCol = {
+  tecnicos: string[];    // ids de perfil
+  barrios: string[];
+  localidades: string[];
+  tipos: string[];       // descripcion_del_trabajo
+  orden: string;         // texto "contiene"
+  contrato: string;
+  direccion: string;
+};
+const FILTROS_COL_VACIOS: FiltrosCol = { tecnicos: [], barrios: [], localidades: [], tipos: [], orden: '', contrato: '', direccion: '' };
+const limpiarTextoFiltro = (s: string) => (s ?? '').replace(/[,()%*\\]/g, ' ').trim();
+const fechaCorta = (iso: string) => (iso ? iso.split('-').reverse().slice(0, 2).join('/') : '…');
+const hoyBogota = () => new Date().toLocaleDateString('en-CA', { timeZone: 'America/Bogota' });
+const sumarDiasISO = (iso: string, dias: number) => {
+  const d = new Date(`${iso}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + dias);
+  return d.toISOString().slice(0, 10);
+};
+const MINUSCULAS_ES = new Set(['de', 'del', 'la', 'las', 'los', 'el', 'y', 'e', 'en', 'al', 'por', 'con']);
+// "PORTAL DE JAMUNDI (JAMUNDI)" → "Portal de Jamundi (Jamundi)". Null-safe.
+const tituloEs = (s?: string | null) => {
+  const t = (s ?? '').toString().trim();
+  if (!t) return '';
+  return t.toLowerCase().split(/\s+/).map((p, i) => {
+    if (/^[ivx]+$/.test(p)) return p.toUpperCase();
+    if (i > 0 && MINUSCULAS_ES.has(p)) return p;
+    return p.replace(/^([("'¿¡]*)([a-záéíóúñü])/, (_m, pre: string, c: string) => pre + c.toUpperCase());
+  }).join(' ');
+};
+// "12155-COTIZAR TRABAJOS VARIOS" → { codigo: '12155', texto: 'Cotizar trabajos varios' }. Null-safe.
+const partirTipo = (s?: string | null) => {
+  const t = (s ?? '').toString().trim();
+  if (!t) return { codigo: '', texto: '' };
+  const m = t.match(/^(\d{3,6})\s*[-–]\s*(.+)$/);
+  const cuerpo = (m ? m[2] : t).trim().toLowerCase();
+  return { codigo: m ? m[1] : '', texto: cuerpo ? cuerpo.charAt(0).toUpperCase() + cuerpo.slice(1) : '' };
+};
+
 export default function AuditoriaClient() {
   const { area } = useArea();
   const [searchTerm, setSearchTerm] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
-  const [tecnicoFilter, setTecnicoFilter] = useState('Todos los Técnicos');
+  const [filtrosCol, setFiltrosCol] = useState<FiltrosCol>(FILTROS_COL_VACIOS);
+  const filtrosColRef = useRef<FiltrosCol>(FILTROS_COL_VACIOS);
+  filtrosColRef.current = filtrosCol;
+  const [panelAbierto, setPanelAbierto] = useState(false);
+  const botonFiltrosRef = useRef<HTMLButtonElement>(null);
+  const listaRef = useRef<HTMLDivElement>(null);   // contenedor con scroll de la tabla
+  const pieRef = useRef<HTMLDivElement>(null);     // pie con la paginación
+  const [alturaLista, setAlturaLista] = useState<number | null>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const [pageSize, setPageSize] = useState(50);
+  const [totalGeneral, setTotalGeneral] = useState<number | null>(null);
+  const [conteoEstado, setConteoEstado] = useState<{ Efectiva: number; Cancelada: number } | null>(null);
+  const [conteoAtajos, setConteoAtajos] = useState<{ hoy: number; ayer: number; sieteDias: number } | null>(null);
+  const [opciones, setOpciones] = useState<{ barrio: string[]; localidad: string[]; tipo: string[] }>({ barrio: [], localidad: [], tipo: [] });
+  type ColFilterKey = 'fecha' | 'orden' | 'contrato' | 'direccion' | 'barrio' | 'localidad' | 'tipo' | 'estado' | 'tecnico';
+  const [openColFilter, setOpenColFilter] = useState<ColFilterKey | null>(null);
+  const [colFilterPos, setColFilterPos] = useState<{ top: number; left: number } | null>(null);
+  const colFilterRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!openColFilter) return;
+    const onClickOutside = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (target.closest('[data-colfilter-caret]')) return;
+      if (colFilterRef.current && !colFilterRef.current.contains(target)) {
+        setOpenColFilter(null);
+      }
+    };
+    document.addEventListener('mousedown', onClickOutside);
+    return () => document.removeEventListener('mousedown', onClickOutside);
+  }, [openColFilter]);
+
+  const toggleColFilter = (col: ColFilterKey, e: React.MouseEvent<HTMLButtonElement>) => {
+    e.stopPropagation();
+    if (openColFilter === col) {
+      setOpenColFilter(null);
+      setColFilterPos(null);
+    } else {
+      const rect = e.currentTarget.getBoundingClientRect();
+      setColFilterPos({ top: rect.bottom + 4, left: Math.min(rect.left, window.innerWidth - 260) });
+      setOpenColFilter(col);
+    }
+  };
   const [estadoFilter, setEstadoFilter] = useState('Todos los Estados');
   const [origenFilter, setOrigenFilter] = useState('Todas');
   const soloDuplicadasRef = useRef(false);
@@ -92,13 +173,13 @@ export default function AuditoriaClient() {
   const [selectedOrders, setSelectedOrders] = useState<string[]>([]);
   const [isDownloading, setIsDownloading] = useState(false);
   const [isReopening, setIsReopening] = useState<string | null>(null);
+  const [descargandoFotos, setDescargandoFotos] = useState(false);
   const [ordenes, setOrdenes] = useState<Orden[]>([]);
   const [loadingOrdenes, setLoadingOrdenes] = useState(true);
   const [errorOrdenes, setErrorOrdenes] = useState<any>(null);
   const [isInitialLoad, setIsInitialLoad] = useState(true);
 
   // ── Paginación ──
-  const PAGE_SIZE = 20;
   const [currentPage, setCurrentPage] = useState(1);
   const [totalCount, setTotalCount] = useState(0);
 
@@ -267,8 +348,13 @@ export default function AuditoriaClient() {
     const tecnico = h.autor_nombre || h.usuario;
     const badgeLabel = h.estado === 'Cancelada' ? 'Incumplida' : h.estado;
 
+    // Motivo de no ejecución (solo órdenes incumplidas): "9565-Inmueble solo"
+    const causalEntrada = (h.estado === 'Cancelada' || h.estado === 'Incumplida') && h.causal_codigo
+      ? (causalLabelPorCodigo[String(h.causal_codigo)] ? `${h.causal_codigo}-${causalLabelPorCodigo[String(h.causal_codigo)]}` : String(h.causal_codigo))
+      : '';
+
     if (h.comentario) {
-      return `${fecha} · ${badgeLabel} · ${tecnico} / ${h.comentario}`;
+      return `${fecha} · ${badgeLabel}${causalEntrada ? ` (${causalEntrada})` : ''} · ${tecnico} / ${h.comentario}`;
     }
 
     if (h.estado === 'Efectiva') {
@@ -292,7 +378,15 @@ export default function AuditoriaClient() {
   const getTecnicoNombre = (id?: string) => {
     if (!id) return 'Sin asignar';
     const t = tecnicos.find(t => t.id_usuario === id);
-    return t ? t.nombre : id;
+    return t ? (t.nombre?.trim() || 'Sin nombre en perfil') : 'Sin nombre en perfil'; // el id se ve en el tooltip de la celda
+  };
+
+  // Abre el reporte de una fila (doble clic, Enter o menú ⋮ → Ver Reporte)
+  const abrirFila = (row: Orden) => {
+    abrirReporte(row);
+    fetchHistorialAuditoria(row.orden_trabajo);
+    setOpenMenuId(null);
+    setMenuPosition(null);
   };
 
   // ── Reporte de la orden: ayudas de presentación ──
@@ -329,42 +423,40 @@ export default function AuditoriaClient() {
   };
 
   const tecnicosUnicos = useMemo(() => {
-    return tecnicos.map(t => t.nombre).sort();
+    return tecnicos.map(t => t.nombre).filter((n): n is string => !!n && !!n.trim()).sort();
   }, [tecnicos]);
 
-  const buildFilteredQuery = useCallback((search: string, tecnico: string, estado: string, desde: string, hasta: string, withCount: boolean) => {
+  const buildFilteredQuery = useCallback((search: string, estado: string, desde: string, hasta: string, withCount: boolean, soloContar = false) => {
+    const f = filtrosColRef.current;
     const query = supabase
       .from('ordenes')
-      .select('*', withCount ? { count: 'exact' } : undefined)
+      .select(soloContar ? 'orden_trabajo' : '*', withCount || soloContar ? { count: 'exact', head: soloContar } : undefined)
       .neq('estado', 'Pendiente')
       .eq('area', area);
 
-    if (search) {
-      query.or(`contrato.ilike.%${search}%,orden_trabajo.ilike.%${search}%`);
+    const busqueda = limpiarTextoFiltro(search);
+    if (busqueda) {
+      query.or(`contrato.ilike.%${busqueda}%,orden_trabajo.ilike.%${busqueda}%,direccion.ilike.%${busqueda}%,barrio.ilike.%${busqueda}%`);
     }
-    if (estado !== 'Todos los Estados') {
-      query.eq('estado', estado);
-    }
-    if (soloDuplicadasRef.current) {
-      query.eq('alerta_orden', 'DUPLICADA_CERRADA');
-    }
-    if (tecnico !== 'Todos los Técnicos') {
-      const tecnicoObj = tecnicosRef.current.find(t => t.nombre === tecnico);
-      if (tecnicoObj) {
-        query.eq('id_tecnico_asignado', tecnicoObj.id_usuario);
-      }
-    }
-    if (desde) {
-      // fecha_cierre >= inicio del día seleccionado (hora de Colombia exacta)
-      query.gte('fecha_cierre', `${desde}T00:00:00-05:00`);
-    }
-    if (hasta) {
-      query.lte('fecha_cierre', `${hasta}T23:59:59.999-05:00`);
-    }
+    if (estado !== 'Todos los Estados') query.eq('estado', estado);
+    if (soloDuplicadasRef.current) query.eq('alerta_orden', 'DUPLICADA_CERRADA');
+    if (f.tecnicos.length) query.in('id_tecnico_asignado', f.tecnicos);
+    if (f.barrios.length) query.in('barrio', f.barrios);
+    if (f.localidades.length) query.in('localidad', f.localidades);
+    if (f.tipos.length) query.in('descripcion_del_trabajo', f.tipos);
+    const tOrden = limpiarTextoFiltro(f.orden);
+    const tContrato = limpiarTextoFiltro(f.contrato);
+    const tDireccion = limpiarTextoFiltro(f.direccion);
+    if (tOrden) query.ilike('orden_trabajo', `%${tOrden}%`);
+    if (tContrato) query.ilike('contrato', `%${tContrato}%`);
+    if (tDireccion) query.ilike('direccion', `%${tDireccion}%`);
+    if (desde) query.gte('fecha_cierre', `${desde}T00:00:00-05:00`);
+    if (hasta) query.lte('fecha_cierre', `${hasta}T23:59:59.999-05:00`);
 
-    query.order('fecha_cierre', { ascending: false, nullsFirst: false });
-    query.order('orden_trabajo', { ascending: false }); // desempate: evita repetir/saltar filas al paginar
-
+    if (!soloContar) {
+      query.order('fecha_cierre', { ascending: false, nullsFirst: false });
+      query.order('orden_trabajo', { ascending: false }); // desempate al paginar
+    }
     return query;
   }, [area]);
 
@@ -372,9 +464,9 @@ export default function AuditoriaClient() {
     setLoadingOrdenes(true);
     setErrorOrdenes(null);
 
-    const query = buildFilteredQuery(debouncedSearch, tecnicoFilter, estadoFilter, startDate, endDate, true);
-    const from = (currentPage - 1) * PAGE_SIZE;
-    const to = from + PAGE_SIZE - 1;
+    const query = buildFilteredQuery(debouncedSearch, estadoFilter, startDate, endDate, true);
+    const from = (currentPage - 1) * pageSize;
+    const to = from + pageSize - 1;
     query.range(from, to);
 
     const { data, error, count } = await query;
@@ -388,7 +480,7 @@ export default function AuditoriaClient() {
     }
     setLoadingOrdenes(false);
     setIsInitialLoad(false);
-  }, [buildFilteredQuery, debouncedSearch, tecnicoFilter, estadoFilter, origenFilter, startDate, endDate, currentPage]);
+  }, [buildFilteredQuery, debouncedSearch, estadoFilter, origenFilter, startDate, endDate, currentPage, pageSize, filtrosCol]);
 
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedSearch(searchTerm), 400);
@@ -398,11 +490,105 @@ export default function AuditoriaClient() {
   useEffect(() => {
     setCurrentPage(1);
     setSelectedOrders([]);
-  }, [debouncedSearch, tecnicoFilter, estadoFilter, origenFilter, startDate, endDate]);
+  }, [debouncedSearch, filtrosCol, estadoFilter, origenFilter, startDate, endDate, pageSize]);
 
   useEffect(() => {
     fetchOrdenes();
   }, [fetchOrdenes]);
+
+  // Altura de la tabla = lo que queda de pantalla debajo de su borde superior, menos el pie y un margen
+  const medirAlturaLista = useCallback(() => {
+    const el = listaRef.current;
+    if (!el) return;
+    const top = el.getBoundingClientRect().top;
+    const pie = pieRef.current?.offsetHeight ?? 0;
+    const libre = Math.floor(window.innerHeight - top - pie - 32);
+    const nueva = Math.max(320, libre);
+    setAlturaLista(prev => (prev === nueva ? prev : nueva));
+  }, []);
+
+  // Se re-mide en cada render (la barra puede crecer: chips, panel) y al cambiar el tamaño de la ventana
+  useEffect(() => { medirAlturaLista(); });
+  useEffect(() => {
+    window.addEventListener('resize', medirAlturaLista);
+    return () => window.removeEventListener('resize', medirAlturaLista);
+  }, [medirAlturaLista]);
+
+  // Total de órdenes cerradas del área (para "N de TOTAL órdenes")
+  useEffect(() => {
+    let cancelado = false;
+    (async () => {
+      const { count } = await supabase
+        .from('ordenes')
+        .select('orden_trabajo', { count: 'exact', head: true })
+        .neq('estado', 'Pendiente')
+        .eq('area', area);
+      if (!cancelado) setTotalGeneral(count ?? 0);
+    })();
+    return () => { cancelado = true; };
+  }, [area]);
+
+  // Conteo por estado respetando los demás filtros (para los números de las pestañas)
+  useEffect(() => {
+    let cancelado = false;
+    (async () => {
+      const [e, c] = await Promise.all([
+        buildFilteredQuery(debouncedSearch, 'Efectiva', startDate, endDate, true, true),
+        buildFilteredQuery(debouncedSearch, 'Cancelada', startDate, endDate, true, true),
+      ]);
+      if (!cancelado) setConteoEstado({ Efectiva: e.count ?? 0, Cancelada: c.count ?? 0 });
+    })();
+    return () => { cancelado = true; };
+  }, [buildFilteredQuery, debouncedSearch, startDate, endDate, filtrosCol, origenFilter]);
+
+  // Conteo de los atajos de fecha (respeta búsqueda, estado y filtros de columna; ignora las fechas)
+  useEffect(() => {
+    let cancelado = false;
+    (async () => {
+      const hoy = hoyBogota();
+      const ayer = sumarDiasISO(hoy, -1);
+      const hace6 = sumarDiasISO(hoy, -6);
+      const [h, a, s] = await Promise.all([
+        buildFilteredQuery(debouncedSearch, estadoFilter, hoy, hoy, true, true),
+        buildFilteredQuery(debouncedSearch, estadoFilter, ayer, ayer, true, true),
+        buildFilteredQuery(debouncedSearch, estadoFilter, hace6, hoy, true, true),
+      ]);
+      if (!cancelado) setConteoAtajos({ hoy: h.count ?? 0, ayer: a.count ?? 0, sieteDias: s.count ?? 0 });
+    })();
+    return () => { cancelado = true; };
+  }, [buildFilteredQuery, debouncedSearch, estadoFilter, filtrosCol, origenFilter]);
+
+  // Opciones de los filtros por columna (barrio, localidad, tipo de trabajo)
+  useEffect(() => {
+    let cancelado = false;
+    (async () => {
+      const { data, error } = await supabase.rpc('auditoria_opciones', { p_area: area });
+      if (error || !data) { console.error('Opciones de filtros:', error); return; }
+      const toList = (campo: string) =>
+        (data as { campo: string; valor: string | null }[])
+          .filter(r => r.campo === campo && r.valor && r.valor.trim())
+          .map(r => r.valor as string)
+          .sort((a, b) => a.localeCompare(b, 'es'));
+      if (!cancelado) setOpciones({ barrio: toList('barrio'), localidad: toList('localidad'), tipo: toList('tipo') });
+    })();
+    return () => { cancelado = true; };
+  }, [area]);
+
+  // Panel de filtros: Esc o clic fuera lo cierran y el foco vuelve al botón
+  useEffect(() => {
+    if (!panelAbierto) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { setPanelAbierto(false); botonFiltrosRef.current?.focus(); }
+    };
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (panelRef.current?.contains(t) || botonFiltrosRef.current?.contains(t)) return;
+      setPanelAbierto(false);
+    };
+    document.addEventListener('keydown', onKey);
+    document.addEventListener('mousedown', onDown);
+    return () => { document.removeEventListener('keydown', onKey); document.removeEventListener('mousedown', onDown); };
+  }, [panelAbierto]);
 
   const filteredData = ordenes;
 
@@ -432,6 +618,38 @@ export default function AuditoriaClient() {
       saveAs(blob, filename);
     } catch (err) {
       console.error("Error downloading file", err);
+    }
+  };
+
+  const descargarFotosOrden = async () => {
+    if (!reporteOrden || fotosOrden.length === 0) return;
+    setDescargandoFotos(true);
+    try {
+      const zip = new JSZip();
+      const carpeta = zip.folder(`Contrato_${reporteOrden.contrato}_OT_${reporteOrden.orden_trabajo}`);
+      if (!carpeta) return;
+      let descargadas = 0;
+      for (let i = 0; i < fotosOrden.length; i++) {
+        try {
+          const resp = await fetch(fotosOrden[i]);
+          if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+          carpeta.file(`Evidencia_${i + 1}.jpg`, await resp.blob());
+          descargadas++;
+        } catch (err) {
+          console.error(`Error al descargar la foto ${i + 1}:`, err);
+        }
+      }
+      if (descargadas === 0) {
+        alert('No se pudo descargar ninguna foto.');
+        return;
+      }
+      const contenido = await zip.generateAsync({ type: 'blob' });
+      saveAs(contenido, `Fotos_OT_${reporteOrden.orden_trabajo}.zip`);
+    } catch (err) {
+      console.error('Error generando ZIP de la orden', err);
+      alert('Hubo un error al generar el archivo ZIP.');
+    } finally {
+      setDescargandoFotos(false);
     }
   };
 
@@ -518,6 +736,22 @@ export default function AuditoriaClient() {
     [itemsEditables]
   );
 
+  // Motivo de no ejecución de la orden abierta: el de la entrada de historial más reciente que lo tenga
+  const causalCierre = useMemo(() => {
+    const conMotivo = [...historialAuditoria].reverse().find((h: any) => h?.causal_codigo);
+    if (!conMotivo) return null;
+    const codigo = String(conMotivo.causal_codigo);
+    return { codigo, texto: causalLabelPorCodigo[codigo] ?? codigo };
+  }, [historialAuditoria]);
+
+  // Todas las fotos de la orden abierta (historial + urls_fotos), sin repetidas
+  const fotosOrden = useMemo(() => {
+    if (!reporteOrden) return [] as string[];
+    const delHistorial = historialAuditoria.flatMap((h: any) => (Array.isArray(h.fotos) ? h.fotos : []));
+    const respaldo = Array.isArray(reporteOrden.urls_fotos) ? reporteOrden.urls_fotos : [];
+    return Array.from(new Set([...delHistorial, ...respaldo].filter((u: any) => typeof u === 'string' && u)));
+  }, [reporteOrden, historialAuditoria]);
+
   const handleGuardarEdicionItems = async () => {
     if (!reporteOrden) return;
     setIsGuardandoEdicion(true);
@@ -601,7 +835,7 @@ export default function AuditoriaClient() {
       setIsDownloading(true);
       let allFiltered = filteredData;
       if (selectedOrders.length === 0) {
-        const query = buildFilteredQuery(debouncedSearch, tecnicoFilter, estadoFilter, startDate, endDate, false);
+        const query = buildFilteredQuery(debouncedSearch, estadoFilter, startDate, endDate, false);
         const { data, error } = await query;
         if (error || !data) {
           alert('No se pudo generar el reporte.');
@@ -662,7 +896,7 @@ export default function AuditoriaClient() {
     const allFiltered: any[] = [];
     for (let desde = 0; ; desde += BLOQUE_ORDENES) {
       const { data: pagina, error } = await buildFilteredQuery(
-        debouncedSearch, tecnicoFilter, estadoFilter, startDate, endDate, false
+        debouncedSearch, estadoFilter, startDate, endDate, false
       ).range(desde, desde + BLOQUE_ORDENES - 1);
       if (error || !pagina) {
         console.error('Error exportando órdenes:', error);
@@ -745,7 +979,7 @@ export default function AuditoriaClient() {
     // en qué columna empiezan "Foto 1", "Foto 2", etc.)
     // Fecha Cierre, Nº Orden, Contrato, Dirección, Barrio, Tipo de Trabajo,
     // Estado, Técnico, Causal de Cierre, Comentario = 10 columnas fijas.
-    const NUM_COLUMNAS_FIJAS = 10;
+    const NUM_COLUMNAS_FIJAS = 11; // + Localidad
 
     const exportData = allFiltered.map((row: any, idx: number) => {
       const cierre = cierrePorOrden[row.orden_trabajo];
@@ -776,6 +1010,7 @@ export default function AuditoriaClient() {
         'Contrato': row.contrato,
         'Dirección': row.direccion || '',
         'Barrio': row.barrio || '',
+        'Localidad': row.localidad || '',
         'Tipo de Trabajo': row.descripcion_del_trabajo || '',
         'Estado': row.estado,
         'Técnico': getTecnicoNombre(row.id_tecnico_asignado),
@@ -828,36 +1063,81 @@ export default function AuditoriaClient() {
     );
   }
 
-  // ── Filtros: atajos de fecha (hora de Colombia) ──
+  // ── Filtros: lógica de la barra (hora de Colombia) ──
   const hoyISO = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Bogota' });
-  const sumarDias = (iso: string, dias: number) => {
-    const d = new Date(`${iso}T00:00:00Z`);
-    d.setUTCDate(d.getUTCDate() + dias);
-    return d.toISOString().slice(0, 10);
-  };
-  const primerDiaMes = `${hoyISO.slice(0, 7)}-01`;
-  const ultimoDiaMesAnterior = sumarDias(primerDiaMes, -1);
-  const primerDiaMesAnterior = `${ultimoDiaMesAnterior.slice(0, 7)}-01`;
-  const atajosFecha = [
-    { id: 'hoy', texto: 'Hoy', desde: hoyISO, hasta: hoyISO },
-    { id: '7d', texto: 'Últimos 7 días', desde: sumarDias(hoyISO, -6), hasta: hoyISO },
-    { id: 'mes', texto: 'Este mes', desde: primerDiaMes, hasta: hoyISO },
-    { id: 'mesant', texto: 'Mes anterior', desde: primerDiaMesAnterior, hasta: ultimoDiaMesAnterior },
+  const ayerISO = sumarDiasISO(hoyISO, -1);
+  const hace6ISO = sumarDiasISO(hoyISO, -6);
+  const atajos: { id: string; texto: string; desde: string; hasta: string; n: number | null }[] = [
+    { id: 'todas', texto: 'Todas', desde: '', hasta: '', n: null },
+    { id: 'hoy', texto: 'Hoy', desde: hoyISO, hasta: hoyISO, n: conteoAtajos?.hoy ?? null },
+    { id: 'ayer', texto: 'Ayer', desde: ayerISO, hasta: ayerISO, n: conteoAtajos?.ayer ?? null },
+    { id: '7d', texto: 'Últimos 7 días', desde: hace6ISO, hasta: hoyISO, n: conteoAtajos?.sieteDias ?? null },
   ];
-  const hayFiltros = !!searchTerm || !!startDate || !!endDate || tecnicoFilter !== 'Todos los Técnicos' || estadoFilter !== 'Todos los Estados' || origenFilter !== 'Todas';
+  // Atajo activo: coincide con las fechas puestas; "Todas" = sin fechas; null = rango personalizado
+  const atajoActivo: string | null =
+    atajos.find(a => a.id !== 'todas' && startDate === a.desde && endDate === a.hasta)?.id
+    ?? (!startDate && !endDate ? 'todas' : null);
+  const opcionesBarrio = opciones.barrio.map(b => ({ value: b, label: tituloEs((b ?? '').replace(/^\s*\d+\s*-\s*/, '')) || b }));
+  const opcionesLocalidad = opciones.localidad.map(l => ({ value: l, label: tituloEs(l) || l }));
+  const opcionesTipo = opciones.tipo.map(t => {
+    const p = partirTipo(t);
+    return { value: t, label: `${p.codigo ? p.codigo + ' · ' : ''}${p.texto || t}` };
+  });
+  const nombreTecnico = (id: string) => (tecnicos.find(t => t.id_usuario === id)?.nombre?.trim()) || 'Sin nombre en perfil';
+  const opcionesTecnico = tecnicos.map(t => ({ value: t.id_usuario, label: t.nombre?.trim() || 'Sin nombre en perfil' }))
+    .sort((a, b) => a.label.localeCompare(b.label, 'es'));
+
+  const setCol = (parcial: Partial<FiltrosCol>) => setFiltrosCol(prev => ({ ...prev, ...parcial }));
+
+  type ChipFiltro = { id: string; texto: string; quitar: () => void };
+  const chipsActivos: ChipFiltro[] = [];
+  if ((startDate || endDate) && atajoActivo === null) {
+    chipsActivos.push({
+      id: 'fecha',
+      texto: `Cerradas: ${fechaCorta(startDate)} – ${fechaCorta(endDate)}`,
+      quitar: () => { setStartDate(''); setEndDate(''); },
+    });
+  }
+  if (filtrosCol.tecnicos.length) chipsActivos.push({ id: 'tec', texto: filtrosCol.tecnicos.length === 1 ? `Técnico: ${nombreTecnico(filtrosCol.tecnicos[0])}` : `Técnicos: ${filtrosCol.tecnicos.length}`, quitar: () => setCol({ tecnicos: [] }) });
+  if (filtrosCol.barrios.length) chipsActivos.push({ id: 'bar', texto: filtrosCol.barrios.length === 1 ? `Barrio: ${filtrosCol.barrios[0]}` : `Barrios: ${filtrosCol.barrios.length}`, quitar: () => setCol({ barrios: [] }) });
+  if (filtrosCol.localidades.length) chipsActivos.push({ id: 'loc', texto: filtrosCol.localidades.length === 1 ? `Localidad: ${filtrosCol.localidades[0]}` : `Localidades: ${filtrosCol.localidades.length}`, quitar: () => setCol({ localidades: [] }) });
+  if (filtrosCol.tipos.length) chipsActivos.push({ id: 'tip', texto: filtrosCol.tipos.length === 1 ? `Tipo: ${filtrosCol.tipos[0]}` : `Tipos: ${filtrosCol.tipos.length}`, quitar: () => setCol({ tipos: [] }) });
+  if (filtrosCol.orden.trim()) chipsActivos.push({ id: 'ord', texto: `Orden: ${filtrosCol.orden.trim()}`, quitar: () => setCol({ orden: '' }) });
+  if (filtrosCol.contrato.trim()) chipsActivos.push({ id: 'con', texto: `Contrato: ${filtrosCol.contrato.trim()}`, quitar: () => setCol({ contrato: '' }) });
+  if (filtrosCol.direccion.trim()) chipsActivos.push({ id: 'dir', texto: `Dirección: ${filtrosCol.direccion.trim()}`, quitar: () => setCol({ direccion: '' }) });
+  if (estadoFilter !== 'Todos los Estados') {
+    chipsActivos.push({
+      id: 'est',
+      texto: `Estado: ${estadoFilter === 'Efectiva' ? 'Efectivas' : 'Canceladas'}`,
+      quitar: () => setEstadoFilter('Todos los Estados'),
+    });
+  }
+  if (origenFilter !== 'Todas') chipsActivos.push({ id: 'ori', texto: 'Duplicadas cerradas', quitar: () => setOrigenFilter('Todas') });
+
+  const nFiltros = chipsActivos.length;
+  const hayFiltros = nFiltros > 0 || !!searchTerm || estadoFilter !== 'Todos los Estados';
   const limpiarFiltros = () => {
     setSearchTerm('');
     setStartDate('');
     setEndDate('');
-    setTecnicoFilter('Todos los Técnicos');
+    setFiltrosCol(FILTROS_COL_VACIOS);
     setEstadoFilter('Todos los Estados');
     setOrigenFilter('Todas');
   };
+  const limpiarSoloFiltros = () => {   // botón "Limpiar filtros" de chips/panel: no toca búsqueda ni pestaña
+    setStartDate('');
+    setEndDate('');
+    setFiltrosCol(FILTROS_COL_VACIOS);
+    setOrigenFilter('Todas');
+  };
+  const numEfectivas = conteoEstado?.Efectiva ?? 0;
+  const numCanceladas = conteoEstado?.Cancelada ?? 0;
+  const numTodas = conteoEstado ? numEfectivas + numCanceladas : totalCount;
   const estiloCampoFiltro: React.CSSProperties = {
     boxSizing: 'border-box', width: '100%', minHeight: 44, padding: '0 12px', border: '1px solid #CBD5E1',
-    borderRadius: 8, background: '#fff', fontSize: 14, color: '#0F2A5C',
+    borderRadius: 10, background: '#fff', fontSize: 14, color: '#0F2A5C',
   };
-  const estiloEtiquetaFiltro: React.CSSProperties = { display: 'block', margin: '0 0 6px', fontSize: 12, color: '#64748B' };
+  const estiloEtiquetaFiltro: React.CSSProperties = { display: 'block', margin: '0 0 6px', fontSize: 12, fontWeight: 500, color: '#64748B' };
 
   return (
     <div className="space-y-6">
@@ -906,117 +1186,240 @@ export default function AuditoriaClient() {
         </div>
       )}
 
-      <section aria-label="Filtros" style={{ background: '#fff', border: '1px solid #E3E9F4', borderRadius: 12, padding: '18px 20px' }}>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, alignItems: 'flex-end' }}>
-          <div style={{ flex: '1 1 260px', minWidth: 260 }}>
-            <label htmlFor="aud-buscar" style={estiloEtiquetaFiltro}>Buscar</label>
-            <div style={{ position: 'relative' }}>
-              <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#64748B" strokeWidth="2" strokeLinecap="round" style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)' }}><circle cx="11" cy="11" r="7" /><path d="M20 20l-3.5-3.5" /></svg>
+      <div style={{ position: 'relative' }}>
+        {/* Barra única: atajos de fecha + búsqueda + Filtros */}
+        <section aria-label="Filtros" style={{ background: '#fff', border: '1px solid #E3E9F4', borderRadius: 12 }}>
+          <div style={{ padding: '0 20px', display: 'flex', alignItems: 'center', gap: 28, minHeight: 60, flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <span style={{ fontSize: 12, fontWeight: 500, color: '#64748B', whiteSpace: 'nowrap' }}>Cerradas</span>
+              <div role="radiogroup" aria-label="Cerradas" style={{ display: 'inline-flex', gap: 2, padding: 4, background: '#F1F5F9', borderRadius: 10, minHeight: 44, boxSizing: 'border-box', alignItems: 'center' }}>
+                {atajos.map(a => {
+                  const activo = atajoActivo === a.id;
+                  return (
+                    <button
+                      key={a.id}
+                      type="button"
+                      role="radio"
+                      aria-checked={activo}
+                      onClick={() => { setStartDate(a.desde); setEndDate(a.hasta); }}
+                      style={{
+                        minHeight: 36, padding: '0 14px', border: 0, borderRadius: 7, cursor: 'pointer', fontSize: 13, whiteSpace: 'nowrap',
+                        fontWeight: activo ? 600 : 500, background: activo ? '#fff' : 'transparent', color: activo ? '#0F2A5C' : '#64748B',
+                        boxShadow: activo ? '0 1px 2px rgba(15,42,92,0.14)' : 'none',
+                      }}
+                    >
+                      {a.texto}
+                      {a.n != null && (
+                        <span style={{ marginLeft: 6, fontWeight: 400, color: activo ? '#475569' : '#94A3B8', fontVariantNumeric: 'tabular-nums' }}>{a.n.toLocaleString('es-CO')}</span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div style={{ position: 'relative', flex: '1 1 260px', minWidth: 240 }}>
+              <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#64748B" strokeWidth="2" strokeLinecap="round" style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)' }}><circle cx="11" cy="11" r="7" /><path d="M20 20l-3.5-3.5" /></svg>
               <input
                 id="aud-buscar"
-                type="text"
-                placeholder="Contrato o número de orden"
+                type="search"
+                aria-label="Buscar por contrato, orden, dirección o barrio"
+                placeholder="Buscar por contrato, orden, dirección o barrio"
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                style={{ ...estiloCampoFiltro, paddingLeft: 36 }}
+                style={{ ...estiloCampoFiltro, paddingLeft: 38 }}
               />
             </div>
-          </div>
-          <div style={{ width: 168 }}>
-            <label htmlFor="aud-desde" style={estiloEtiquetaFiltro}>Cerradas desde</label>
-            <input id="aud-desde" type="date" value={startDate} max={endDate || undefined} onChange={(e) => setStartDate(e.target.value)} style={{ ...estiloCampoFiltro, fontVariantNumeric: 'tabular-nums' }} />
-          </div>
-          <div style={{ width: 168 }}>
-            <label htmlFor="aud-hasta" style={estiloEtiquetaFiltro}>Cerradas hasta</label>
-            <input id="aud-hasta" type="date" value={endDate} min={startDate || undefined} onChange={(e) => setEndDate(e.target.value)} style={{ ...estiloCampoFiltro, fontVariantNumeric: 'tabular-nums' }} />
-          </div>
-          <div style={{ width: 200 }}>
-            <span style={estiloEtiquetaFiltro}>Técnico</span>
-            <FiltroLista
-              etiqueta="Técnico"
-              textoBoton="Todos"
-              value={tecnicoFilter}
-              ocupaTodo
-              valorVacio="Todos los Técnicos"
-              textoVacio="Todos los técnicos"
-              opciones={tecnicosUnicos.map(t => ({ value: t, label: t }))}
-              onChange={setTecnicoFilter}
-              buscable
-            />
-          </div>
-          <div style={{ width: 170 }}>
-            <span style={estiloEtiquetaFiltro}>Estado</span>
-            <FiltroLista
-              etiqueta="Estado"
-              textoBoton="Todos"
-              value={estadoFilter}
-              ocupaTodo
-              valorVacio="Todos los Estados"
-              textoVacio="Todos los estados"
-              opciones={[
-                { value: 'Efectiva', label: 'Efectiva' },
-                { value: 'Cancelada', label: 'Cancelada' },
-              ]}
-              onChange={setEstadoFilter}
-            />
-          </div>
-          <div style={{ width: 170 }}>
-            <span style={estiloEtiquetaFiltro}>Origen</span>
-            <FiltroLista
-              etiqueta="Origen"
-              textoBoton="Todas"
-              value={origenFilter}
-              ocupaTodo
-              valorVacio="Todas"
-              textoVacio="Todas las órdenes"
-              opciones={[{ value: 'Duplicadas', label: 'Duplicadas cerradas' }]}
-              onChange={setOrigenFilter}
-            />
-          </div>
-        </div>
 
-        <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginTop: 14, paddingTop: 14, borderTop: '1px solid #EEF2F8' }}>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
-            <span style={{ fontSize: 12, color: '#64748B', marginRight: 4 }}>Atajos</span>
-            {atajosFecha.map(a => {
-              const activo = startDate === a.desde && endDate === a.hasta;
-              return (
-                <button
-                  key={a.id}
-                  type="button"
-                  aria-pressed={activo}
-                  onClick={() => { setStartDate(a.desde); setEndDate(a.hasta); }}
-                  style={{
-                    minHeight: 44, padding: '0 14px', borderRadius: 8, fontSize: 13, fontWeight: 500, cursor: 'pointer',
-                    border: activo ? '1px solid #0F2A5C' : '1px solid #CBD5E1',
-                    background: activo ? '#0F2A5C' : '#fff',
-                    color: activo ? '#fff' : '#0F2A5C',
-                  }}
-                >
-                  {a.texto}
-                </button>
-              );
-            })}
+            <button
+              ref={botonFiltrosRef}
+              type="button"
+              aria-haspopup="dialog"
+              aria-expanded={panelAbierto}
+              onClick={() => setPanelAbierto(v => !v)}
+              style={{
+                minHeight: 44, padding: '0 14px', borderRadius: 10, display: 'inline-flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 14,
+                fontWeight: nFiltros ? 600 : 500,
+                border: nFiltros ? '1px solid #BFDBFE' : '1px solid #CBD5E1',
+                background: nFiltros ? '#EFF6FF' : '#fff',
+                color: nFiltros ? '#1D4ED8' : '#0F2A5C',
+              }}
+            >
+              {!nFiltros && <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M4 6h16M7 12h10M10 18h4" /></svg>}
+              Filtros
+              {nFiltros > 0 && <span style={{ fontSize: 12, fontWeight: 600, background: '#1D4ED8', color: '#fff', borderRadius: 999, padding: '1px 8px', fontVariantNumeric: 'tabular-nums' }}>{nFiltros}</span>}
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg>
+            </button>
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-            <p aria-live="polite" style={{ margin: 0, fontSize: 13, color: '#64748B', fontVariantNumeric: 'tabular-nums' }}>
-              <span style={{ color: '#0F2A5C', fontWeight: 600 }}>{totalCount}</span> {totalCount === 1 ? 'orden' : 'órdenes'}
-            </p>
-            {hayFiltros && (
-              <button type="button" onClick={limpiarFiltros} style={{ minHeight: 44, padding: '0 6px', border: 0, background: 'none', color: '#1D4ED8', fontSize: 13, fontWeight: 500, cursor: 'pointer' }}>
+        </section>
+
+        {/* Panel de Filtros (se aplican al instante) */}
+        {panelAbierto && (
+          <div
+            ref={panelRef}
+            role="dialog"
+            aria-label="Filtros"
+            style={{ position: 'absolute', right: 0, top: 68, width: 'min(620px, 100%)', background: '#fff', border: '1px solid #E3E9F4', borderRadius: 14, boxShadow: '0 16px 40px rgba(15,42,92,0.18)', zIndex: 30 }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '16px 20px 4px' }}>
+              <h2 style={{ margin: 0, fontSize: 16, fontWeight: 600, color: '#0F2A5C' }}>Filtros</h2>
+              <span style={{ fontSize: 13, color: '#64748B', fontVariantNumeric: 'tabular-nums' }}><b style={{ color: '#0F2A5C' }}>{totalCount}</b> de {totalGeneral ?? '…'} órdenes</span>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, padding: '12px 20px 16px' }}>
+              <div>
+                <label htmlFor="aud-desde" style={estiloEtiquetaFiltro}>Cerradas desde</label>
+                <input id="aud-desde" type="date" value={startDate} max={endDate || undefined} onChange={(e) => setStartDate(e.target.value)} style={{ ...estiloCampoFiltro, fontVariantNumeric: 'tabular-nums' }} />
+              </div>
+              <div>
+                <label htmlFor="aud-hasta" style={estiloEtiquetaFiltro}>Cerradas hasta</label>
+                <input id="aud-hasta" type="date" value={endDate} min={startDate || undefined} onChange={(e) => setEndDate(e.target.value)} style={{ ...estiloCampoFiltro, fontVariantNumeric: 'tabular-nums' }} />
+              </div>
+
+              <div style={{ gridColumn: '1 / -1' }}>
+                <span style={estiloEtiquetaFiltro}>Estado</span>
+                <div role="radiogroup" aria-label="Estado" style={{ display: 'flex', gap: 2, padding: 4, background: '#F1F5F9', borderRadius: 10, minHeight: 44, boxSizing: 'border-box', alignItems: 'center' }}>
+                  {[
+                    { v: 'Todos los Estados', t: 'Todas', n: numTodas },
+                    { v: 'Efectiva', t: 'Efectivas', n: numEfectivas },
+                    { v: 'Cancelada', t: 'Canceladas', n: numCanceladas },
+                  ].map(o => {
+                    const a = estadoFilter === o.v;
+                    return (
+                      <button
+                        key={o.v}
+                        type="button"
+                        role="radio"
+                        aria-checked={a}
+                        onClick={() => setEstadoFilter(o.v)}
+                        style={{ flex: 1, minHeight: 36, borderRadius: 7, border: 0, cursor: 'pointer', fontSize: 13, fontWeight: a ? 600 : 500, background: a ? '#fff' : 'transparent', color: a ? '#0F2A5C' : '#64748B', boxShadow: a ? '0 1px 2px rgba(15,42,92,0.14)' : 'none' }}
+                      >
+                        {o.t} <span style={{ fontWeight: 400, color: '#64748B', fontVariantNumeric: 'tabular-nums' }}>{o.n.toLocaleString('es-CO')}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div>
+                <span style={estiloEtiquetaFiltro}>Localidad</span>
+                <FiltroLista
+                  etiqueta="Localidad"
+                  textoBoton="Todas"
+                  value={filtrosCol.localidades[0] ?? 'Todas'}
+                  ocupaTodo
+                  valorVacio="Todas"
+                  textoVacio="Todas las localidades"
+                  opciones={opcionesLocalidad}
+                  onChange={(v) => setCol({ localidades: v === 'Todas' || !v ? [] : [v] })}
+                  buscable
+                />
+              </div>
+              <div>
+                <span style={estiloEtiquetaFiltro}>Técnico</span>
+                <FiltroLista
+                  etiqueta="Técnico"
+                  textoBoton="Todos"
+                  value={filtrosCol.tecnicos[0] ?? 'Todos'}
+                  ocupaTodo
+                  valorVacio="Todos"
+                  textoVacio="Todos los técnicos"
+                  opciones={opcionesTecnico}
+                  onChange={(v) => setCol({ tecnicos: v === 'Todos' || !v ? [] : [v] })}
+                  buscable
+                />
+              </div>
+              <div>
+                <span style={estiloEtiquetaFiltro}>Barrio</span>
+                <FiltroLista
+                  etiqueta="Barrio"
+                  textoBoton="Todos"
+                  value={filtrosCol.barrios[0] ?? 'Todos'}
+                  ocupaTodo
+                  valorVacio="Todos"
+                  textoVacio="Todos los barrios"
+                  opciones={opcionesBarrio}
+                  onChange={(v) => setCol({ barrios: v === 'Todos' || !v ? [] : [v] })}
+                  buscable
+                />
+              </div>
+              <div>
+                <span style={estiloEtiquetaFiltro}>Tipo de trabajo</span>
+                <FiltroLista
+                  etiqueta="Tipo de trabajo"
+                  textoBoton="Todos"
+                  value={filtrosCol.tipos[0] ?? 'Todos'}
+                  ocupaTodo
+                  valorVacio="Todos"
+                  textoVacio="Todos los tipos"
+                  opciones={opcionesTipo}
+                  onChange={(v) => setCol({ tipos: v === 'Todos' || !v ? [] : [v] })}
+                  buscable
+                />
+              </div>
+
+              <div style={{ gridColumn: '1 / -1' }}>
+                <span style={estiloEtiquetaFiltro}>Origen</span>
+                <div role="radiogroup" aria-label="Origen" style={{ display: 'flex', gap: 2, padding: 4, background: '#F1F5F9', borderRadius: 10, minHeight: 44, boxSizing: 'border-box', alignItems: 'center' }}>
+                  {[{ v: 'Todas', t: 'Todas' }, { v: 'Duplicadas', t: 'Duplicadas cerradas' }].map(o => {
+                    const a = origenFilter === o.v;
+                    return (
+                      <button
+                        key={o.v}
+                        type="button"
+                        role="radio"
+                        aria-checked={a}
+                        onClick={() => setOrigenFilter(o.v)}
+                        style={{ flex: 1, minHeight: 36, borderRadius: 7, border: 0, cursor: 'pointer', fontSize: 13, fontWeight: a ? 600 : 500, background: a ? '#fff' : 'transparent', color: a ? '#0F2A5C' : '#64748B', boxShadow: a ? '0 1px 2px rgba(15,42,92,0.14)' : 'none' }}
+                      >
+                        {o.t}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 16px 12px 20px', borderTop: '1px solid #EEF2F8', background: '#F8FAFC', borderRadius: '0 0 14px 14px' }}>
+              <button type="button" onClick={limpiarSoloFiltros} style={{ minHeight: 44, padding: '0 4px', border: 0, background: 'none', color: '#1D4ED8', fontSize: 14, fontWeight: 500, cursor: 'pointer', marginRight: 'auto' }}>
+                Limpiar filtros
+              </button>
+              <button type="button" onClick={() => { setPanelAbierto(false); botonFiltrosRef.current?.focus(); }} style={{ minHeight: 44, padding: '0 22px', borderRadius: 10, border: 0, background: '#1D4ED8', color: '#fff', fontSize: 14, fontWeight: 600, cursor: 'pointer' }}>
+                Ver {totalCount} {totalCount === 1 ? 'orden' : 'órdenes'}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Chips de filtros activos + total */}
+        {nFiltros > 0 && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
+            {chipsActivos.map(c => (
+              <span key={c.id} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, minHeight: 36, boxSizing: 'border-box', padding: '0 4px 0 14px', borderRadius: 999, border: '1px solid #BFDBFE', background: '#EFF6FF', color: '#1D4ED8', fontSize: 13, fontWeight: 500, maxWidth: 360 }}>
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.texto}</span>
+                <button type="button" onClick={c.quitar} aria-label={`Quitar filtro ${c.texto}`} style={{ width: 28, height: 28, borderRadius: 999, border: 0, background: 'none', color: 'inherit', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
+                </button>
+              </span>
+            ))}
+            {nFiltros > 0 && (
+              <button type="button" onClick={limpiarSoloFiltros} style={{ minHeight: 44, padding: '0 8px', border: 0, background: 'none', color: '#1D4ED8', fontSize: 13, fontWeight: 500, cursor: 'pointer' }}>
                 Limpiar filtros
               </button>
             )}
+            <span aria-live="polite" style={{ marginLeft: 'auto', fontSize: 13, color: '#64748B', fontVariantNumeric: 'tabular-nums' }}>
+              <b style={{ color: '#0F2A5C' }}>{totalCount}</b> de {totalGeneral ?? '…'} órdenes
+            </span>
           </div>
-        </div>
-      </section>
+        )}
+      </div>
 
       <div className={`bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden transition-opacity duration-150 ${loadingOrdenes && !isInitialLoad ? 'opacity-60 pointer-events-none' : 'opacity-100'}`}>
-        <div className="w-full">
-          <table className="w-full text-left border-collapse">
+        <div ref={listaRef} className="w-full overflow-auto" style={{ maxHeight: alturaLista ? `${alturaLista}px` : 'calc(100vh - 300px)', minHeight: 320 }}>
+          <table className="w-full text-left border-separate border-spacing-0">
             <thead>
-              <tr className="bg-gray-50 border-b border-gray-200 text-xs uppercase text-gray-500 font-semibold tracking-wider">
-                <th className="py-2 px-3 w-12 text-center">
+              <tr>
+                <th className="sticky top-0 z-10 bg-gray-50 border-b border-gray-200 py-2 px-3 w-12 text-center">
                   <input
                     type="checkbox"
                     className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer h-4 w-4"
@@ -1024,31 +1427,306 @@ export default function AuditoriaClient() {
                     onChange={handleSelectAll}
                   />
                 </th>
-                <th className="py-2 px-3">Fecha de Cierre</th>
-                <th className="py-2 px-3">Nº Orden</th>
-                <th className="py-2 px-3">Contrato</th>
-                <th className="py-2 px-3">Dirección</th>
-                <th className="py-2 px-3">Barrio</th>
-                <th className="py-2 px-3">Estado</th>
-                <th className="py-2 px-3">Técnico</th>
-                <th className="py-2 px-3 text-center">Acciones</th>
+                <th className="sticky top-0 z-10 bg-gray-50 border-b border-gray-200 py-2 px-3 text-xs uppercase text-gray-500 font-semibold tracking-wider">
+                  <div className="flex items-center gap-1">
+                    <span>Fecha de Cierre</span>
+                    <button
+                      type="button"
+                      data-colfilter-caret="true"
+                      onClick={(e) => toggleColFilter('fecha', e)}
+                      aria-label="Filtrar por Fecha de Cierre"
+                      className={`p-1 -m-1 rounded hover:bg-gray-200 inline-flex items-center gap-1 ${startDate || endDate ? 'text-blue-600' : 'text-gray-400'}`}
+                    >
+                      {Boolean(startDate || endDate) && <span className="w-1.5 h-1.5 rounded-full bg-blue-600 inline-block" />}
+                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" /></svg>
+                    </button>
+                    {openColFilter === 'fecha' && (
+                      <ColumnDateFilter
+                        panelRef={colFilterRef}
+                        position={colFilterPos ?? { top: 0, left: 0 }}
+                        startDate={startDate}
+                        endDate={endDate}
+                        onApply={(desde, hasta) => {
+                          setStartDate(desde);
+                          setEndDate(hasta);
+                          setOpenColFilter(null);
+                        }}
+                        onCancel={() => setOpenColFilter(null)}
+                      />
+                    )}
+                  </div>
+                </th>
+                <th className="sticky top-0 z-10 bg-gray-50 border-b border-gray-200 py-2 px-3 text-xs uppercase text-gray-500 font-semibold tracking-wider">
+                  <div className="flex items-center gap-1">
+                    <span>Nº Orden</span>
+                    <button
+                      type="button"
+                      data-colfilter-caret="true"
+                      onClick={(e) => toggleColFilter('orden', e)}
+                      aria-label="Filtrar por Nº Orden"
+                      className={`p-1 -m-1 rounded hover:bg-gray-200 inline-flex items-center gap-1 ${filtrosCol.orden.trim() ? 'text-blue-600' : 'text-gray-400'}`}
+                    >
+                      {Boolean(filtrosCol.orden.trim()) && <span className="w-1.5 h-1.5 rounded-full bg-blue-600 inline-block" />}
+                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" /></svg>
+                    </button>
+                    {openColFilter === 'orden' && (
+                      <ColumnTextFilter
+                        panelRef={colFilterRef}
+                        position={colFilterPos ?? { top: 0, left: 0 }}
+                        value={filtrosCol.orden}
+                        placeholder="Contiene Nº Orden…"
+                        onApply={(v) => {
+                          setCol({ orden: v });
+                          setOpenColFilter(null);
+                        }}
+                        onCancel={() => setOpenColFilter(null)}
+                      />
+                    )}
+                  </div>
+                </th>
+                <th className="sticky top-0 z-10 bg-gray-50 border-b border-gray-200 py-2 px-3 text-xs uppercase text-gray-500 font-semibold tracking-wider">
+                  <div className="flex items-center gap-1">
+                    <span>Contrato</span>
+                    <button
+                      type="button"
+                      data-colfilter-caret="true"
+                      onClick={(e) => toggleColFilter('contrato', e)}
+                      aria-label="Filtrar por Contrato"
+                      className={`p-1 -m-1 rounded hover:bg-gray-200 inline-flex items-center gap-1 ${filtrosCol.contrato.trim() ? 'text-blue-600' : 'text-gray-400'}`}
+                    >
+                      {Boolean(filtrosCol.contrato.trim()) && <span className="w-1.5 h-1.5 rounded-full bg-blue-600 inline-block" />}
+                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" /></svg>
+                    </button>
+                    {openColFilter === 'contrato' && (
+                      <ColumnTextFilter
+                        panelRef={colFilterRef}
+                        position={colFilterPos ?? { top: 0, left: 0 }}
+                        value={filtrosCol.contrato}
+                        placeholder="Contiene Contrato…"
+                        onApply={(v) => {
+                          setCol({ contrato: v });
+                          setOpenColFilter(null);
+                        }}
+                        onCancel={() => setOpenColFilter(null)}
+                      />
+                    )}
+                  </div>
+                </th>
+                <th className="sticky top-0 z-10 bg-gray-50 border-b border-gray-200 py-2 px-3 text-xs uppercase text-gray-500 font-semibold tracking-wider">
+                  <div className="flex items-center gap-1">
+                    <span>Dirección</span>
+                    <button
+                      type="button"
+                      data-colfilter-caret="true"
+                      onClick={(e) => toggleColFilter('direccion', e)}
+                      aria-label="Filtrar por Dirección"
+                      className={`p-1 -m-1 rounded hover:bg-gray-200 inline-flex items-center gap-1 ${filtrosCol.direccion.trim() ? 'text-blue-600' : 'text-gray-400'}`}
+                    >
+                      {Boolean(filtrosCol.direccion.trim()) && <span className="w-1.5 h-1.5 rounded-full bg-blue-600 inline-block" />}
+                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" /></svg>
+                    </button>
+                    {openColFilter === 'direccion' && (
+                      <ColumnTextFilter
+                        panelRef={colFilterRef}
+                        position={colFilterPos ?? { top: 0, left: 0 }}
+                        value={filtrosCol.direccion}
+                        placeholder="Contiene Dirección…"
+                        onApply={(v) => {
+                          setCol({ direccion: v });
+                          setOpenColFilter(null);
+                        }}
+                        onCancel={() => setOpenColFilter(null)}
+                      />
+                    )}
+                  </div>
+                </th>
+                <th className="sticky top-0 z-10 bg-gray-50 border-b border-gray-200 py-2 px-3 text-xs uppercase text-gray-500 font-semibold tracking-wider">
+                  <div className="flex items-center gap-1">
+                    <span>Barrio</span>
+                    <button
+                      type="button"
+                      data-colfilter-caret="true"
+                      onClick={(e) => toggleColFilter('barrio', e)}
+                      aria-label="Filtrar por Barrio"
+                      className={`p-1 -m-1 rounded hover:bg-gray-200 inline-flex items-center gap-1 ${filtrosCol.barrios.length ? 'text-blue-600' : 'text-gray-400'}`}
+                    >
+                      {filtrosCol.barrios.length > 0 && <span className="w-1.5 h-1.5 rounded-full bg-blue-600 inline-block" />}
+                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" /></svg>
+                    </button>
+                    {openColFilter === 'barrio' && (
+                      <ExcelColumnFilter
+                        panelRef={colFilterRef}
+                        position={colFilterPos ?? { top: 0, left: 0 }}
+                        options={opcionesBarrio}
+                        selected={filtrosCol.barrios.length ? new Set(filtrosCol.barrios) : null}
+                        onApply={(next) => {
+                          setCol({ barrios: next ? Array.from(next) : [] });
+                          setOpenColFilter(null);
+                        }}
+                        onCancel={() => setOpenColFilter(null)}
+                      />
+                    )}
+                  </div>
+                </th>
+                <th className="sticky top-0 z-10 bg-gray-50 border-b border-gray-200 py-2 px-3 text-xs uppercase text-gray-500 font-semibold tracking-wider">
+                  <div className="flex items-center gap-1">
+                    <span>Localidad</span>
+                    <button
+                      type="button"
+                      data-colfilter-caret="true"
+                      onClick={(e) => toggleColFilter('localidad', e)}
+                      aria-label="Filtrar por Localidad"
+                      className={`p-1 -m-1 rounded hover:bg-gray-200 inline-flex items-center gap-1 ${filtrosCol.localidades.length ? 'text-blue-600' : 'text-gray-400'}`}
+                    >
+                      {filtrosCol.localidades.length > 0 && <span className="w-1.5 h-1.5 rounded-full bg-blue-600 inline-block" />}
+                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" /></svg>
+                    </button>
+                    {openColFilter === 'localidad' && (
+                      <ExcelColumnFilter
+                        panelRef={colFilterRef}
+                        position={colFilterPos ?? { top: 0, left: 0 }}
+                        options={opcionesLocalidad}
+                        selected={filtrosCol.localidades.length ? new Set(filtrosCol.localidades) : null}
+                        onApply={(next) => {
+                          setCol({ localidades: next ? Array.from(next) : [] });
+                          setOpenColFilter(null);
+                        }}
+                        onCancel={() => setOpenColFilter(null)}
+                      />
+                    )}
+                  </div>
+                </th>
+                <th className="sticky top-0 z-10 bg-gray-50 border-b border-gray-200 py-2 px-3 text-xs uppercase text-gray-500 font-semibold tracking-wider">
+                  <div className="flex items-center gap-1">
+                    <span>Tipo de trabajo</span>
+                    <button
+                      type="button"
+                      data-colfilter-caret="true"
+                      onClick={(e) => toggleColFilter('tipo', e)}
+                      aria-label="Filtrar por Tipo de trabajo"
+                      className={`p-1 -m-1 rounded hover:bg-gray-200 inline-flex items-center gap-1 ${filtrosCol.tipos.length ? 'text-blue-600' : 'text-gray-400'}`}
+                    >
+                      {filtrosCol.tipos.length > 0 && <span className="w-1.5 h-1.5 rounded-full bg-blue-600 inline-block" />}
+                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" /></svg>
+                    </button>
+                    {openColFilter === 'tipo' && (
+                      <ExcelColumnFilter
+                        panelRef={colFilterRef}
+                        position={colFilterPos ?? { top: 0, left: 0 }}
+                        options={opcionesTipo}
+                        selected={filtrosCol.tipos.length ? new Set(filtrosCol.tipos) : null}
+                        onApply={(next) => {
+                          setCol({ tipos: next ? Array.from(next) : [] });
+                          setOpenColFilter(null);
+                        }}
+                        onCancel={() => setOpenColFilter(null)}
+                      />
+                    )}
+                  </div>
+                </th>
+                <th className="sticky top-0 z-10 bg-gray-50 border-b border-gray-200 py-2 px-3 text-xs uppercase text-gray-500 font-semibold tracking-wider">
+                  <div className="flex items-center gap-1">
+                    <span>Estado</span>
+                    <button
+                      type="button"
+                      data-colfilter-caret="true"
+                      onClick={(e) => toggleColFilter('estado', e)}
+                      aria-label="Filtrar por Estado"
+                      className={`p-1 -m-1 rounded hover:bg-gray-200 inline-flex items-center gap-1 ${estadoFilter !== 'Todos los Estados' ? 'text-blue-600' : 'text-gray-400'}`}
+                    >
+                      {estadoFilter !== 'Todos los Estados' && <span className="w-1.5 h-1.5 rounded-full bg-blue-600 inline-block" />}
+                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" /></svg>
+                    </button>
+                    {openColFilter === 'estado' && (
+                      <ExcelColumnFilter
+                        panelRef={colFilterRef}
+                        position={colFilterPos ?? { top: 0, left: 0 }}
+                        options={[
+                          { value: 'Efectiva', label: 'Efectiva' },
+                          { value: 'Cancelada', label: 'Cancelada' },
+                        ]}
+                        selected={estadoFilter === 'Todos los Estados' ? null : new Set([estadoFilter])}
+                        onApply={(next) => {
+                          if (!next || next.size === 0 || next.size === 2) {
+                            setEstadoFilter('Todos los Estados');
+                          } else if (next.has('Efectiva')) {
+                            setEstadoFilter('Efectiva');
+                          } else if (next.has('Cancelada')) {
+                            setEstadoFilter('Cancelada');
+                          }
+                          setOpenColFilter(null);
+                        }}
+                        onCancel={() => setOpenColFilter(null)}
+                      />
+                    )}
+                  </div>
+                </th>
+                <th className="sticky top-0 z-10 bg-gray-50 border-b border-gray-200 py-2 px-3 text-xs uppercase text-gray-500 font-semibold tracking-wider">
+                  <div className="flex items-center gap-1">
+                    <span>Técnico</span>
+                    <button
+                      type="button"
+                      data-colfilter-caret="true"
+                      onClick={(e) => toggleColFilter('tecnico', e)}
+                      aria-label="Filtrar por Técnico"
+                      className={`p-1 -m-1 rounded hover:bg-gray-200 inline-flex items-center gap-1 ${filtrosCol.tecnicos.length ? 'text-blue-600' : 'text-gray-400'}`}
+                    >
+                      {filtrosCol.tecnicos.length > 0 && <span className="w-1.5 h-1.5 rounded-full bg-blue-600 inline-block" />}
+                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" /></svg>
+                    </button>
+                    {openColFilter === 'tecnico' && (
+                      <ExcelColumnFilter
+                        panelRef={colFilterRef}
+                        position={colFilterPos ?? { top: 0, left: 0 }}
+                        options={opcionesTecnico}
+                        selected={filtrosCol.tecnicos.length ? new Set(filtrosCol.tecnicos) : null}
+                        onApply={(next) => {
+                          setCol({ tecnicos: next ? Array.from(next) : [] });
+                          setOpenColFilter(null);
+                        }}
+                        onCancel={() => setOpenColFilter(null)}
+                      />
+                    )}
+                  </div>
+                </th>
+                <th className="sticky top-0 z-10 bg-gray-50 border-b border-gray-200 py-2 px-3 text-center text-xs uppercase text-gray-500 font-semibold tracking-wider">
+                  Acciones
+                </th>
               </tr>
             </thead>
             <tbody className="text-xs text-gray-700">
               {filteredData.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="py-8 px-6 text-center text-gray-500">
+                  <td colSpan={11} className="py-8 px-6 text-center text-gray-500">
                     No hay órdenes en historial o que coincidan con los filtros.
                   </td>
                 </tr>
               ) : (
-                filteredData.map((row) => (
+                filteredData.map((row) => {
+                  const bordeFila = row.alerta_orden === 'DUPLICADA_CERRADA' ? 'border-b border-red-100' : 'border-b border-gray-100';
+                  return (
                     <tr
                       key={row.orden_trabajo}
-                      className={`border-b transition-colors ${row.alerta_orden === 'DUPLICADA_CERRADA' ? 'border-red-100 bg-red-50 hover:bg-red-100/70' : 'border-gray-100 hover:bg-gray-50'}`}
-                      style={row.alerta_orden === 'DUPLICADA_CERRADA' ? { boxShadow: 'inset 3px 0 0 #DC2626' } : undefined}
+                      tabIndex={0}
+                      title="Doble clic para abrir el reporte · Enter con el teclado"
+                      onDoubleClick={(e) => {
+                        // No abrir si el doble clic fue sobre la casilla, un botón o el menú
+                        if ((e.target as HTMLElement).closest('input, button, a, label')) return;
+                        window.getSelection()?.removeAllRanges();
+                        abrirFila(row);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && e.target === e.currentTarget) {
+                          e.preventDefault();
+                          abrirFila(row);
+                        }
+                      }}
+                      className={`transition-colors cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-blue-600 ${row.alerta_orden === 'DUPLICADA_CERRADA' ? 'bg-red-50 hover:bg-red-100/70' : 'hover:bg-gray-50'}`}
                     >
-                      <td className="py-2 px-3 text-center">
+                      <td
+                        className={`py-2 px-3 text-center ${bordeFila}`}
+                        style={row.alerta_orden === 'DUPLICADA_CERRADA' ? { boxShadow: 'inset 3px 0 0 #DC2626' } : undefined}
+                      >
                         <input
                           type="checkbox"
                           className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer h-4 w-4"
@@ -1056,7 +1734,7 @@ export default function AuditoriaClient() {
                           onChange={() => handleSelectOne(row.orden_trabajo)}
                         />
                       </td>
-                      <td className="py-2 px-3 text-gray-900">
+                      <td className={`py-2 px-3 text-gray-900 ${bordeFila}`}>
                         {row.fecha_cierre ? new Date(row.fecha_cierre).toLocaleString('es-CO', {
                           timeZone: 'America/Bogota',
                           day: '2-digit',
@@ -1067,12 +1745,25 @@ export default function AuditoriaClient() {
                           hour12: true
                         }) : 'Sin fecha'}
                       </td>
-                      <td className="py-2 px-3 font-medium text-gray-900">{row.orden_trabajo}</td>
-                      <td className="py-2 px-3 text-gray-500">{row.contrato}</td>
-                      <td className="py-2 px-3 text-gray-500 max-w-[180px] truncate" title={row.direccion || '-'}>{row.direccion || '-'}</td>
-                      <td className="py-2 px-3 text-gray-500 max-w-[180px] truncate" title={row.barrio || '-'}>{row.barrio || '-'}</td>
-                      <td className="py-2 px-3">
-                        <span className={`px-2 py-1 rounded-full text-xs font-semibold ${row.estado === 'Cancelada' ? 'bg-red-50 text-red-700 border border-red-200' : 'bg-green-50 text-green-700 border border-green-200'}`}>
+                      <td className={`py-2 px-3 font-medium text-gray-900 ${bordeFila}`}>{row.orden_trabajo}</td>
+                      <td className={`py-2 px-3 text-gray-500 ${bordeFila}`}>{row.contrato}</td>
+                      <td className={`py-2 px-3 text-gray-500 max-w-[180px] truncate ${bordeFila}`} title={row.direccion || '-'}>{row.direccion || '-'}</td>
+                      <td className={`py-2 px-3 text-gray-500 max-w-[180px] truncate ${bordeFila}`} title={row.barrio || '-'}>{tituloEs((row.barrio ?? '').replace(/^\s*\d+\s*-\s*/, '')) || '-'}</td>
+                      <td className={`py-2 px-3 text-gray-500 max-w-[150px] truncate ${bordeFila}`} title={row.localidad || '-'}>{tituloEs(row.localidad) || '-'}</td>
+                      <td className={`py-2 px-3 text-gray-600 max-w-[240px] truncate ${bordeFila}`} title={row.descripcion_del_trabajo || '-'}>
+                        {(() => {
+                          const tp = partirTipo(row.descripcion_del_trabajo);
+                          return (
+                            <>
+                              {tp.codigo && <span className="text-gray-400 tabular-nums mr-1.5">{tp.codigo}</span>}
+                              {tp.texto || '-'}
+                            </>
+                          );
+                        })()}
+                      </td>
+                      <td className={`py-2 px-3 ${bordeFila}`}>
+                        <span className="inline-flex items-center gap-2 font-medium text-gray-800">
+                          <span aria-hidden="true" className={`w-2 h-2 rounded-full ${row.estado === 'Cancelada' ? 'bg-red-600' : 'bg-green-600'}`} />
                           {row.estado}
                         </span>
                         {row.alerta_orden === 'DUPLICADA_CERRADA' && (
@@ -1081,8 +1772,18 @@ export default function AuditoriaClient() {
                           </p>
                         )}
                       </td>
-                      <td className="py-2 px-3 text-gray-600">{getTecnicoNombre(row.id_tecnico_asignado)}</td>
-                      <td className="py-2 px-3 text-center">
+                      <td
+                        className={`py-2 px-3 text-gray-600 ${bordeFila}`}
+                        title={getTecnicoNombre(row.id_tecnico_asignado) === 'Sin nombre en perfil' ? `Este técnico no tiene nombre en su perfil (id ${row.id_tecnico_asignado ?? ''})` : undefined}
+                      >
+                        {(() => {
+                          const n = getTecnicoNombre(row.id_tecnico_asignado);
+                          return n === 'Sin nombre en perfil' || n === 'Sin asignar'
+                            ? <span className="italic text-gray-400">{n}</span>
+                            : tituloEs(n);
+                        })()}
+                      </td>
+                      <td className={`py-2 px-3 text-center ${bordeFila}`}>
                         <button
                           onClick={(e) => {
                             if (openMenuId === row.orden_trabajo) {
@@ -1114,6 +1815,7 @@ export default function AuditoriaClient() {
                         {openMenuId === row.orden_trabajo && menuPosition && (
                           <div
                             ref={menuRef}
+                            onDoubleClick={(e) => e.stopPropagation()}
                             style={{ position: 'fixed', top: menuPosition.top, left: menuPosition.left }}
                             className="w-56 bg-white rounded-lg shadow-lg border border-gray-200 z-50 py-1 text-left"
                           >
@@ -1144,7 +1846,8 @@ export default function AuditoriaClient() {
                         )}
                       </td>
                     </tr>
-                ))
+                  );
+                })
               )}
             </tbody>
           </table>
@@ -1152,9 +1855,9 @@ export default function AuditoriaClient() {
 
         {/* ── Paginación ── */}
         {totalCount > 0 && (() => {
-          const totalPages = Math.ceil(totalCount / PAGE_SIZE);
-          const from = (currentPage - 1) * PAGE_SIZE + 1;
-          const to = Math.min(currentPage * PAGE_SIZE, totalCount);
+          const totalPages = Math.ceil(totalCount / pageSize);
+          const from = (currentPage - 1) * pageSize + 1;
+          const to = Math.min(currentPage * pageSize, totalCount);
 
           // Generar números de página visibles
           const pages: (number | '...')[] = [];
@@ -1171,12 +1874,24 @@ export default function AuditoriaClient() {
           }
 
           return (
-            <div className="flex items-center justify-between p-4 border-t border-gray-100 bg-gray-50/50">
+            <div ref={pieRef} className="flex items-center justify-between p-4 border-t border-gray-100 bg-gray-50/50">
               <p className="text-sm text-gray-500">
                 Mostrando <span className="font-medium text-gray-700">{from}</span> a{' '}
                 <span className="font-medium text-gray-700">{to}</span> de{' '}
                 <span className="font-medium text-gray-700">{totalCount}</span> órdenes
               </p>
+              <label className="flex items-center gap-2 text-sm text-gray-500">
+                Filas por página
+                <select
+                  value={pageSize}
+                  aria-label="Filas por página"
+                  onChange={(e) => setPageSize(Number(e.target.value))}
+                  className="rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-sm text-gray-700"
+                  style={{ minHeight: 36 }}
+                >
+                  {[20, 50, 100].map(n => <option key={n} value={n}>{n}</option>)}
+                </select>
+              </label>
               <div className="flex items-center gap-1">
                 {/* Flecha anterior */}
                 <button
@@ -1285,6 +2000,12 @@ export default function AuditoriaClient() {
                   <p style={rpt.etiqueta}>Dirección</p>
                   <p style={rpt.valor}>{reporteOrden.direccion || '—'}</p>
                   <p style={{ margin: '2px 0 0', fontSize: 13, color: '#64748B' }}>Barrio {nombreBarrio(reporteOrden.barrio)}</p>
+                  {reporteOrden.estado === 'Cancelada' && causalCierre && (
+                    <p style={{ margin: '8px 0 0', fontSize: 13, fontWeight: 600, color: '#B91C1C' }}>
+                      <span style={{ color: '#64748B', fontWeight: 500 }}>Motivo de no ejecución: </span>
+                      {causalCierre.texto} <span style={{ color: '#94A3B8', fontWeight: 400, fontVariantNumeric: 'tabular-nums' }}>({causalCierre.codigo})</span>
+                    </p>
+                  )}
                   {reporteOrden.alerta_orden === 'DUPLICADA_CERRADA' && (
                     <p style={{ margin: '8px 0 0', fontSize: 13, fontWeight: 600, color: '#B91C1C' }}>
                       Cerrada como duplicada de la orden #{String(reporteOrden.orden_relacionada || '')}
@@ -1464,6 +2185,21 @@ export default function AuditoriaClient() {
                 <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap', margin: '2px 0 10px' }}>
                   <h2 id="reporte-historial" style={rpt.h2}>Historial de la orden</h2>
                   <span style={rpt.pista}>Comentarios y fotos registrados desde la app móvil</span>
+                  <button
+                    type="button"
+                    onClick={descargarFotosOrden}
+                    disabled={descargandoFotos || fotosOrden.length === 0}
+                    aria-label={`Descargar las ${fotosOrden.length} fotos de la orden`}
+                    style={{
+                      ...rpt.botonSecundario, marginLeft: 'auto', alignSelf: 'center',
+                      display: 'inline-flex', alignItems: 'center', gap: 8,
+                      opacity: descargandoFotos || fotosOrden.length === 0 ? 0.5 : 1,
+                      cursor: descargandoFotos ? 'wait' : fotosOrden.length === 0 ? 'not-allowed' : 'pointer',
+                    }}
+                  >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+                    {descargandoFotos ? 'Empaquetando…' : `Descargar fotos (${fotosOrden.length})`}
+                  </button>
                 </div>
 
                 {loadingHistorialAuditoria ? (
@@ -1518,6 +2254,13 @@ export default function AuditoriaClient() {
                                 )}
                               </div>
 
+                              {(h.estado === 'Cancelada' || h.estado === 'Incumplida') && h.causal_codigo && (
+                                <p style={{ margin: '0 0 8px', fontSize: 13, fontWeight: 600, color: '#B91C1C' }}>
+                                  <span style={{ color: '#64748B', fontWeight: 500 }}>Motivo de no ejecución: </span>
+                                  {causalLabelPorCodigo[String(h.causal_codigo)] ?? String(h.causal_codigo)}
+                                  <span style={{ marginLeft: 6, color: '#94A3B8', fontWeight: 400, fontVariantNumeric: 'tabular-nums' }}>({String(h.causal_codigo)})</span>
+                                </p>
+                              )}
                               {textoEntrada ? (
                                 <p style={{ margin: 0, fontSize: 14, lineHeight: 1.6, color: '#24324A', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{textoEntrada}</p>
                               ) : (

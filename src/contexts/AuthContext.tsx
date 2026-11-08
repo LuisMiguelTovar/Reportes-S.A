@@ -1,7 +1,7 @@
 'use client';
 
 import { createContext, useContext, useEffect, useState, ReactNode } from 'react';
-import { supabase } from '@/lib/supabase';
+import { supabase, isInvalidRefreshTokenError } from '@/lib/supabase';
 import type { Session, User } from '@supabase/supabase-js';
 
 interface AuthContextType {
@@ -26,10 +26,33 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     // Check initial session
     const initSession = async () => {
-      const { data: { session: currentSession } } = await supabase.auth.getSession();
-      setSession(currentSession);
-      setUser(currentSession?.user ?? null);
-      setIsLoading(false);
+      try {
+        const { data, error } = await supabase.auth.getSession();
+        if (error && isInvalidRefreshTokenError(error)) {
+          await supabase.auth.signOut();
+          setSession(null);
+          setUser(null);
+          setIsLoading(false);
+          if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
+            window.location.replace('/login');
+          }
+          return;
+        }
+        const currentSession = data?.session ?? null;
+        setSession(currentSession);
+        setUser(currentSession?.user ?? null);
+      } catch (err) {
+        if (isInvalidRefreshTokenError(err)) {
+          await supabase.auth.signOut();
+          setSession(null);
+          setUser(null);
+          if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
+            window.location.replace('/login');
+          }
+        }
+      } finally {
+        setIsLoading(false);
+      }
     };
 
     initSession();

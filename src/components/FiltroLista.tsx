@@ -3,16 +3,25 @@
 import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
 
 // "octavio CULMA" -> "Octavio Culma"
-export const nombreTitulo = (s: string) =>
-  s.trim().toLowerCase().split(/\s+/).map(p => p.charAt(0).toUpperCase() + p.slice(1)).join(' ');
-
-// "12137-TRABAJOS POR REPARACIÓN" -> "Trabajos por reparación"
-export const etiquetaTrabajo = (s: string) => {
-  const t = s.replace(/^\s*\d+\s*-\s*/, '').trim().toLowerCase();
-  return t.charAt(0).toUpperCase() + t.slice(1);
+export const nombreTitulo = (s?: string | null) => {
+  const t = (s ?? '').toString();
+  if (!t.trim()) return '';
+  return t.trim().toLowerCase().split(/\s+/).map(p => p.charAt(0).toUpperCase() + p.slice(1)).join(' ');
 };
 
-const plano = (s: string) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+// "12137-TRABAJOS POR REPARACIÓN" -> "Trabajos por reparación"
+export const etiquetaTrabajo = (s?: string | null) => {
+  const t = (s ?? '').toString();
+  if (!t.trim()) return '';
+  const limpia = t.replace(/^\s*\d+\s*-\s*/, '').trim().toLowerCase();
+  return limpia ? limpia.charAt(0).toUpperCase() + limpia.slice(1) : '';
+};
+
+export const plano = (s?: string | null) => {
+  const t = (s ?? '').toString();
+  if (!t.trim()) return '';
+  return t.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+};
 
 type Opcion = { value: string; label: string };
 
@@ -53,15 +62,26 @@ export default function FiltroLista({
   const idLista = useId();
 
   const todas: Opcion[] = useMemo(
-    () => [{ value: valorVacio, label: textoVacio }, ...opciones],
+    () => [
+      { value: valorVacio, label: textoVacio },
+      ...(opciones || [])
+        .filter(o => o && o.value !== null && o.value !== undefined)
+        .map(o => {
+          const raw = (o.label ?? '').toString().trim();
+          return {
+            value: o.value,
+            label: raw === '' || raw === '-' ? '(Vacías)' : (o.label ?? '').toString(),
+          };
+        }),
+    ],
     [valorVacio, textoVacio, opciones]
   );
 
   const visibles = useMemo(() => {
     const q = plano(consulta.trim());
     if (!q) return todas;
-    return opciones.filter(o => plano(o.label).includes(q));
-  }, [todas, opciones, consulta]);
+    return todas.slice(1).filter(o => plano(o.label).includes(q));
+  }, [todas, consulta]);
 
   const activoFiltro = value !== valorVacio;
   const elegida = todas.find(o => o.value === value);
@@ -167,7 +187,7 @@ export default function FiltroLista({
           </button>
           <button
             type="button"
-            aria-label={`Quitar filtro de ${etiqueta.toLowerCase()}`}
+            aria-label={`Quitar filtro de ${(etiqueta ?? '').toLowerCase()}`}
             onClick={() => onChange(valorVacio)}
             style={{
               width: 36, minHeight: 42, border: 0, background: 'none', color: '#1D4ED8',
@@ -218,12 +238,12 @@ export default function FiltroLista({
                 ref={campo}
                 type="text"
                 role="combobox"
-                aria-label={`Buscar en ${etiqueta.toLowerCase()}`}
+                aria-label={`Buscar en ${(etiqueta ?? '').toLowerCase()}`}
                 aria-expanded="true"
                 aria-controls={idLista}
                 aria-activedescendant={visibles[activo] ? `${idLista}-${activo}` : undefined}
                 aria-autocomplete="list"
-                placeholder={`Buscar en ${etiqueta.toLowerCase()}`}
+                placeholder={`Buscar en ${(etiqueta ?? '').toLowerCase()}`}
                 value={consulta}
                 onChange={e => setConsulta(e.target.value)}
                 style={{

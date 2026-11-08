@@ -10,6 +10,7 @@ import { useArea } from '@/components/AreaProvider';
 import toast from 'react-hot-toast';
 import FiltroLista, { nombreTitulo, etiquetaTrabajo } from '@/components/FiltroLista';
 import TecnicoCombobox from '@/components/TecnicoCombobox';
+import ExcelColumnFilter from '@/components/ExcelColumnFilter';
 
 interface ItemReporte {
   id: string;
@@ -68,12 +69,13 @@ const calcularDiasSLA = (fechaAsignacion?: string) => {
   return dias > 0 ? dias : 0;
 };
 
-const formatRol = (rol?: string): string => {
-  if (!rol) return '';
-  const lower = rol.toLowerCase();
+const formatRol = (rol?: string | null): string => {
+  const t = (rol ?? '').toString();
+  if (!t.trim()) return '';
+  const lower = t.toLowerCase();
   if (lower === 'tecnico' || lower === 'técnico') return 'Técnico';
   if (lower === 'admin' || lower === 'administrador') return 'Administrador';
-  return rol;
+  return t;
 };
 
 /// Formatea una fecha PURA (sin hora, tipo "2026-08-18") a "DD/MM/AAAA"
@@ -88,10 +90,11 @@ function formatearFechaPura(fecha?: string | null): string {
   return `${day}/${month}/${year}`;
 }
 
-const formatBarrio = (barrio?: string): string => {
-  if (!barrio) return '-';
+const formatBarrio = (s?: string | null): string => {
+  const t = (s ?? '').toString();
+  if (!t.trim()) return '';
   // Elimina prefijos tipo "5376 - " o "5376-" dejando solo el nombre
-  return barrio.replace(/^\s*\d+\s*-\s*/, '').trim() || barrio;
+  return t.replace(/^\s*\d+\s*-\s*/, '').trim() || t;
 };
 
 // Palabras que se escriben sin tilde en la base y deben verse con tilde. Se amplía cuando aparezcan más.
@@ -103,21 +106,36 @@ const ACENTOS: Record<string, string> = {
   fatima: 'fátima', maria: 'maría', jose: 'josé', martin: 'martín', joaquin: 'joaquín',
 };
 const CONECTORES = new Set(['de', 'del', 'la', 'las', 'los', 'el', 'y', 'e', 'en']);
-const conTilde = (p: string) => ACENTOS[p] ?? p;
+const conTilde = (s?: string | null) => {
+  const t = (s ?? '').toString();
+  if (!t.trim()) return '';
+  return ACENTOS[t] ?? t;
+};
 
 // "TERRON COLORADO" -> "Terrón Colorado"; "BARRIO DE LA PAZ" -> "Barrio de la Paz"
-const tituloEs = (s: string): string =>
-  s.trim().toLowerCase().split(/\s+/).filter(Boolean)
+const tituloEs = (s?: string | null): string => {
+  const t = (s ?? '').toString();
+  if (!t.trim()) return '';
+  return t.trim().toLowerCase().split(/\s+/).filter(Boolean)
     .map((p, i) => {
       const w = conTilde(p);
       return i > 0 && CONECTORES.has(w) ? w : w.charAt(0).toUpperCase() + w.slice(1);
     })
     .join(' ');
+};
 
 // "12137-TRABAJOS POR REPARACION" -> "Trabajos por reparación"
-const oracionEs = (s: string): string => {
-  const t = etiquetaTrabajo(s).split(' ').map(conTilde).join(' ');
-  return t.charAt(0).toUpperCase() + t.slice(1);
+const oracionEs = (s?: string | null): string => {
+  const t = (s ?? '').toString();
+  if (!t.trim()) return '';
+  const et = etiquetaTrabajo(t).split(' ').map(conTilde).join(' ');
+  return et ? et.charAt(0).toUpperCase() + et.slice(1) : '';
+};
+
+const plano = (s?: string | null): string => {
+  const t = (s ?? '').toString();
+  if (!t.trim()) return '';
+  return t.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
 };
 
 // Control de opciones cortas (un clic): Fecha y Alerta en el panel de filtros.
@@ -166,154 +184,6 @@ function aplicarFiltroAlerta(q: any, sel: Set<string> | null) {
     else partes.push(`alerta_orden.eq.${v}`);
   });
   if (partes.length > 0) q.or(partes.join(','));
-}
-
-function ExcelColumnFilter({
-  options,
-  selected,
-  onApply,
-  onCancel,
-  panelRef,
-  position,
-}: {
-  options: { value: string; label: string }[];
-  selected: Set<string> | null; // null = todas
-  onApply: (next: Set<string> | null) => void;
-  onCancel: () => void;
-  panelRef?: React.RefObject<HTMLDivElement | null>;
-  position: { top: number; left: number };
-}) {
-  const allValues = useMemo(() => options.map(o => o.value), [options]);
-  const [search, setSearch] = useState('');
-  const [checked, setChecked] = useState<Set<string>>(() => new Set(selected ?? allValues));
-  const [hasInteracted, setHasInteracted] = useState(false);
-
-  const filteredOptions = useMemo(
-    () => options.filter(o => o.label.toLowerCase().includes(search.toLowerCase())),
-    [options, search]
-  );
-
-  const allFilteredChecked = filteredOptions.length > 0 && filteredOptions.every(o => checked.has(o.value));
-
-  const toggleAllFiltered = () => {
-    setHasInteracted(true);
-    setChecked(prev => {
-      const next = new Set(prev);
-      if (allFilteredChecked) {
-        filteredOptions.forEach(o => next.delete(o.value));
-      } else {
-        filteredOptions.forEach(o => next.add(o.value));
-      }
-      return next;
-    });
-  };
-
-  const aplicar = () => {
-    if (!hasInteracted && search.trim() !== '') {
-      // Solo buscó, no tocó ningún checkbox: aplica exactamente lo visible.
-      onApply(new Set(filteredOptions.map((o) => o.value)));
-    } else if (checked.size === allValues.length) {
-      onApply(null); // Todo marcado = sin filtro
-    } else {
-      onApply(new Set(checked));
-    }
-  };
-
-  // Teclado: Esc cancela, Enter aplica, ↑/↓ recorren buscador y casillas, Espacio marca (nativo en la casilla).
-  const usoTeclado = useRef(false);
-  const elementoPrevio = useRef<HTMLElement | null>(
-    typeof document !== 'undefined' ? (document.activeElement as HTMLElement | null) : null
-  );
-  useEffect(() => {
-    const previo = elementoPrevio.current;
-    // Al cerrar con el teclado, el foco vuelve a la flechita que abrió el panel.
-    return () => { if (usoTeclado.current && previo && previo.isConnected) previo.focus(); };
-  }, []);
-
-  const manejarTeclas = (e: React.KeyboardEvent<HTMLDivElement>) => {
-    const destino = e.target as HTMLElement;
-    if (e.key === 'Escape') {
-      e.preventDefault();
-      e.stopPropagation();
-      usoTeclado.current = true;
-      onCancel();
-      return;
-    }
-    if (e.key === 'Enter') {
-      usoTeclado.current = true;
-      if (destino.tagName === 'BUTTON') return; // Cancelar / Aceptar hacen su propia acción
-      e.preventDefault();
-      aplicar();
-      return;
-    }
-    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-      const campos = Array.from(e.currentTarget.querySelectorAll<HTMLInputElement>('input'));
-      const i = campos.indexOf(destino as HTMLInputElement);
-      if (i === -1) return;
-      const siguiente = campos[e.key === 'ArrowDown' ? Math.min(i + 1, campos.length - 1) : Math.max(i - 1, 0)];
-      e.preventDefault();
-      siguiente?.focus();
-      siguiente?.scrollIntoView({ block: 'nearest' });
-    }
-  };
-
-  const toggleOne = (value: string) => {
-    setHasInteracted(true);
-    setChecked(prev => {
-      const next = new Set(prev);
-      if (next.has(value)) next.delete(value); else next.add(value);
-      return next;
-    });
-  };
-
-  return (
-    <div
-      ref={panelRef}
-      role="dialog"
-      aria-label="Filtro de columna"
-      onKeyDown={manejarTeclas}
-      className="fixed z-50 bg-white border border-gray-200 rounded-lg shadow-lg p-2 normal-case font-normal text-gray-700"
-      style={{ top: position.top, left: position.left, width: '240px' }}
-    >
-      <input
-        type="text"
-        autoFocus
-        placeholder="Buscar..."
-        value={search}
-        onChange={(e) => setSearch(e.target.value)}
-        className="w-full border border-gray-200 rounded-md px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 mb-2"
-      />
-      <label className="flex items-center gap-2 px-1 py-1 text-xs font-semibold text-gray-700 border-b border-gray-100 mb-1 cursor-pointer focus-within:bg-blue-50 focus-within:ring-1 focus-within:ring-blue-300 rounded">
-        <input type="checkbox" checked={allFilteredChecked} onChange={toggleAllFiltered} className="rounded" />
-        (Seleccionar todo)
-      </label>
-      <div className="max-h-48 overflow-y-auto flex flex-col gap-0.5">
-        {filteredOptions.length === 0 ? (
-          <p className="text-xs text-gray-400 px-1 py-2">Sin resultados</p>
-        ) : (
-          filteredOptions.map(opt => (
-            <label key={opt.value} className="flex items-center gap-2 px-1 py-1 text-xs text-gray-600 hover:bg-gray-50 focus-within:bg-blue-50 focus-within:ring-1 focus-within:ring-blue-300 rounded cursor-pointer">
-              <input type="checkbox" checked={checked.has(opt.value)} onChange={() => toggleOne(opt.value)} className="rounded" />
-              <span className="truncate">{opt.label}</span>
-            </label>
-          ))
-        )}
-      </div>
-      <div className="flex items-center justify-between gap-2 pt-2 mt-1 border-t border-gray-100">
-        <button type="button" onClick={onCancel} className="text-xs text-gray-500 hover:text-gray-700 px-2 py-1 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
-          Cancelar
-        </button>
-        <button
-          type="button"
-          onClick={aplicar}
-          className="text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-md px-3 py-1.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-1 focus-visible:ring-blue-500"
-        >
-          Aceptar
-        </button>
-      </div>
-      <p className="px-1 pt-1.5 text-[10px] leading-tight text-gray-400">↑↓ moverse · Espacio marcar · Enter aplicar · Esc cancelar</p>
-    </div>
-  );
 }
 
 export default function DespachoTableClient() {
@@ -717,10 +587,10 @@ export default function DespachoTableClient() {
 
     if (!data) return;
 
-    const locs = [...new Set(data.map((d) => d.localidad).filter(Boolean))].sort();
-    const descs = [...new Set(data.map((d) => d.descripcion_del_trabajo).filter(Boolean))].sort() as string[];
-    const ordenes = [...new Set(data.map((d) => d.orden_trabajo).filter(Boolean))].sort();
-    const contratos = [...new Set(data.map((d) => d.contrato).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+    const locs = [...new Set(data.map((d) => (d.localidad ?? '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'es'));
+    const descs = [...new Set(data.map((d) => (d.descripcion_del_trabajo ?? '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'es')) as string[];
+    const ordenes = [...new Set(data.map((d) => (d.orden_trabajo ?? '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'es'));
+    const contratos = [...new Set(data.map((d) => (d.contrato ?? '').trim()).filter(Boolean))].sort((a, b) => (a ?? '').localeCompare(b ?? '', 'es'));
 
     const dias = [...new Set(data.map((d) => String(calcularDiasSLA(d.fecha_asignacion_ot))))]
       .sort((a, b) => Number(a) - Number(b));
@@ -1697,7 +1567,7 @@ export default function DespachoTableClient() {
                         ocupaTodo
                         valorVacio="Todas"
                         textoVacio="Todas las localidades"
-                        opciones={localidadesUnicas.map(loc => ({ value: loc, label: loc }))}
+                        opciones={localidadesUnicas.filter(Boolean).map(loc => ({ value: loc, label: loc }))}
                         onChange={setLocalidadFilter}
                       />
                     </div>
@@ -1710,7 +1580,7 @@ export default function DespachoTableClient() {
                         ocupaTodo
                         valorVacio="Todas las Descripciones"
                         textoVacio="Todos los tipos de trabajo"
-                        opciones={descripcionesUnicas.map(desc => ({ value: desc, label: etiquetaTrabajo(desc) }))}
+                        opciones={descripcionesUnicas.filter(Boolean).map(desc => ({ value: desc, label: etiquetaTrabajo(desc) || '(Vacías)' }))}
                         onChange={setDescripcionFilter}
                       />
                     </div>
@@ -1727,7 +1597,8 @@ export default function DespachoTableClient() {
                         opciones={[
                           { value: 'Sin asignar', label: 'Sin asignar' },
                           ...tecnicos
-                            .map(t => ({ value: t.id_usuario, label: nombreTitulo(t.nombre) }))
+                            .filter(t => t && t.id_usuario)
+                            .map(t => ({ value: t.id_usuario, label: nombreTitulo(t.nombre) || '(Vacías)' }))
                             .sort((a, b) => a.label.localeCompare(b.label, 'es')),
                         ]}
                         onChange={setTecnicoFilter}

@@ -5,10 +5,17 @@ import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
 type Tecnico = { id_usuario: string; nombre: string };
 
 // "luis ROJAS" -> "Luis Rojas"
-const titulo = (s: string) =>
-  s.trim().toLowerCase().split(/\s+/).map(p => p.charAt(0).toUpperCase() + p.slice(1)).join(' ');
+const titulo = (s?: string | null) => {
+  const t = (s ?? '').toString();
+  if (!t.trim()) return '';
+  return t.trim().toLowerCase().split(/\s+/).map(p => p.charAt(0).toUpperCase() + p.slice(1)).join(' ');
+};
 // Sin tildes ni mayúsculas, para buscar
-const plano = (s: string) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+const plano = (s?: string | null) => {
+  const t = (s ?? '').toString();
+  if (!t.trim()) return '';
+  return t.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+};
 
 const soloLector: React.CSSProperties = {
   position: 'absolute', width: 1, height: 1, overflow: 'hidden', clip: 'rect(0,0,0,0)', whiteSpace: 'nowrap',
@@ -45,8 +52,9 @@ export default function TecnicoCombobox({
 
   const opciones = useMemo(() => {
     const q = plano(consulta.trim());
-    return tecnicos
-      .map(t => ({ id: t.id_usuario, nombre: titulo(t.nombre), n: carga ? carga[t.id_usuario] || 0 : 0 }))
+    return (tecnicos || [])
+      .filter(t => t && t.id_usuario)
+      .map(t => ({ id: t.id_usuario, nombre: titulo(t.nombre) || '(Vacías)', n: carga ? carga[t.id_usuario] || 0 : 0 }))
       .filter(t => !q || plano(t.nombre).includes(q))
       .sort((a, b) => (hayCarga ? a.n - b.n : 0) || a.nombre.localeCompare(b.nombre, 'es'));
   }, [tecnicos, consulta, carga, hayCarga]);

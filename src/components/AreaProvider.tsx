@@ -1,7 +1,7 @@
 "use client";
 import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { supabase } from '@/lib/supabase';
+import { supabase, isInvalidRefreshTokenError } from '@/lib/supabase';
 
 export type AreaCodigo = 'SA' | 'RI';
 export const NOMBRES_AREA: Record<AreaCodigo, string> = {
@@ -47,19 +47,34 @@ export default function AreaProvider({ children }: { children: React.ReactNode }
     (async () => {
       let permitidas: AreaCodigo[] = ['SA'];
       try {
-        const { data: { user } } = await supabase.auth.getUser();
+        const { data, error } = await supabase.auth.getUser();
+        if (error && isInvalidRefreshTokenError(error)) {
+          await supabase.auth.signOut();
+          if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
+            window.location.replace('/login');
+          }
+          return;
+        }
+        const user = data?.user;
         if (user) {
-          const { data } = await supabase
+          const { data: perfilData } = await supabase
             .from('perfiles')
             .select('areas')
             .eq('id_usuario', user.id)
             .maybeSingle();
-          const lista = ((data?.areas as string[] | null) || []).filter(
+          const lista = ((perfilData?.areas as string[] | null) || []).filter(
             (a): a is AreaCodigo => a === 'SA' || a === 'RI'
           );
           if (lista.length > 0) permitidas = lista;
         }
-      } catch {
+      } catch (err) {
+        if (isInvalidRefreshTokenError(err)) {
+          await supabase.auth.signOut();
+          if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
+            window.location.replace('/login');
+          }
+          return;
+        }
         /* si falla, se queda en SA */
       }
       if (!activo) return;
