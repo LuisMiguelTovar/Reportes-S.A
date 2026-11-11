@@ -403,8 +403,10 @@ export default function DespachoTableClient() {
       .eq('area', area);
 
     // Búsqueda
-    if (search) {
-      query.or(`contrato.ilike.%${search}%,orden_trabajo.ilike.%${search}%,direccion.ilike.%${search}%,barrio.ilike.%${search}%`);
+    // Se quitan espacios sobrantes y caracteres que rompen el filtro (coma, paréntesis, %, *, \)
+    const busqueda = (search ?? '').replace(/[,()%*\\]/g, ' ').trim();
+    if (busqueda) {
+      query.or(`contrato.ilike.%${busqueda}%,orden_trabajo.ilike.%${busqueda}%,direccion.ilike.%${busqueda}%,barrio.ilike.%${busqueda}%`);
     }
     // Estado real
     if (estado !== 'Todos') {
