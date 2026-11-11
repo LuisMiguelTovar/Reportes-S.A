@@ -1,5 +1,6 @@
 'use client';
 
+import { ESCALA_PANEL } from '@/lib/escala';
 import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import * as XLSX from 'xlsx';
 import UserProfile from '@/components/UserProfile';
@@ -11,6 +12,14 @@ import EquipoTrabajoEditor from '@/components/EquipoTrabajoEditor';
 import FiltroLista from '@/components/FiltroLista';
 import ExcelColumnFilter, { ColumnTextFilter, ColumnDateFilter } from '@/components/ExcelColumnFilter';
 import { useArea } from '@/components/AreaProvider';
+import { useAuth } from '@/contexts/AuthContext';
+import {
+  useMarcasSmartflex,
+  formatoFechaHora,
+  marcarSmartflex,
+  tomarOrdenPorAbrir,
+  EVENTO_ABRIR_ORDEN,
+} from '@/lib/smartflex';
 
 interface ItemReporte {
   id: string;
@@ -402,7 +411,12 @@ export default function AuditoriaClient() {
       : '';
 
     if (h.comentario) {
-      return `${fecha} · ${badgeLabel}${causalEntrada ? ` (${causalEntrada})` : ''} · ${tecnico} / ${h.comentario}`;
+      let obs = String(h.comentario).replace(/\s*\n+\s*/g, ' ');
+      if (h.estado === 'Programada') obs = obs.replace(/\s*Atendido por:?\s*/gi, ' atiende ').replace(/\s{2,}/g, ' ');
+      obs = obs.trim();
+      // Programada: fecha · técnico / observación atiende NOMBRE (sin repetir el estado)
+      if (h.estado === 'Programada') return `${fecha} · ${tecnico} / ${obs}`;
+      return `${fecha} · ${badgeLabel}${causalEntrada ? ` (${causalEntrada})` : ''} · ${tecnico} / ${obs}`;
     }
 
     if (h.estado === 'Efectiva') {
@@ -436,6 +450,54 @@ export default function AuditoriaClient() {
     setOpenMenuId(null);
     setMenuPosition(null);
   };
+
+  // ── Seguimiento de comentarios para Open Smartflex ──
+  const { user } = useAuth();
+  const marcasSmartflex = useMarcasSmartflex(ordenes.map((o) => o.orden_trabajo));
+  const [copiadasSf, setCopiadasSf] = useState<string[]>([]); // comentarios ya copiados (para resaltar «Marcar como registrado»)
+
+  // Botón del modal: pendiente ⇄ pasado
+  const alternarSmartflex = async (h: any) => {
+    if (!h?.id || !h?.smartflex) return;
+    const pasar = h.smartflex === 'pendiente';
+    const ok = await marcarSmartflex(h.id, pasar, user?.email);
+    if (!ok) {
+      window.alert('No se pudo actualizar la marca de Smartflex. Intenta de nuevo.');
+      return;
+    }
+    setHistorialAuditoria((prev) => prev.map((x: any) => (x.id === h.id ? { ...x, smartflex: pasar ? 'pasado' : 'pendiente', smartflex_pasado_por: pasar ? (user?.email ?? null) : null, smartflex_pasado_en: pasar ? new Date().toISOString() : null } : x)));
+  };
+
+  // Abrir una orden desde la campana (doble clic en un aviso)
+  const abrirOrdenRef = useRef<(o: Orden) => void>(() => {});
+  abrirOrdenRef.current = (o: Orden) => abrirFila(o);
+  useEffect(() => {
+    const abrirPorNumero = async (numero: string) => {
+      const { data } = await supabase
+        .from('ordenes')
+        .select('*')
+        .eq('orden_trabajo', numero)
+        .eq('area', area)
+        .maybeSingle();
+      if (!data) {
+        window.alert(`No se encontró la orden ${numero}.`);
+        return;
+      }
+      abrirOrdenRef.current(data as Orden);
+    };
+    // Llegaste desde otra pantalla: la orden quedó guardada para esta
+    const guardada = tomarOrdenPorAbrir('auditoria');
+    if (guardada) abrirPorNumero(guardada);
+    // Ya estabas aquí: la campana avisa por evento
+    const alPedir = (e: Event) => {
+      const d = (e as CustomEvent<{ orden?: string; destino?: string }>).detail;
+      if (d?.destino !== 'auditoria' || !d.orden) return;
+      tomarOrdenPorAbrir('auditoria'); // limpia lo guardado
+      abrirPorNumero(d.orden);
+    };
+    window.addEventListener(EVENTO_ABRIR_ORDEN, alPedir);
+    return () => window.removeEventListener(EVENTO_ABRIR_ORDEN, alPedir);
+  }, [area]);
 
   // ── Reporte de la orden: ayudas de presentación ──
   const cerrarReporte = () => {
@@ -550,7 +612,8 @@ export default function AuditoriaClient() {
     if (!el) return;
     const top = el.getBoundingClientRect().top;
     const pie = pieRef.current?.offsetHeight ?? 0;
-    const libre = Math.floor(window.innerHeight - top - pie - 32);
+    // top/innerHeight en píxeles reales de pantalla; pie y margen en unidades con zoom
+    const libre = Math.floor((window.innerHeight - top) / ESCALA_PANEL - pie - 32);
     const nueva = Math.max(320, libre);
     setAlturaLista(prev => (prev === nueva ? prev : nueva));
   }, []);
@@ -1464,7 +1527,7 @@ export default function AuditoriaClient() {
       </div>
 
       <div className={`bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden transition-opacity duration-150 ${loadingOrdenes && !isInitialLoad ? 'opacity-60 pointer-events-none' : 'opacity-100'}`}>
-        <div ref={listaRef} className="w-full overflow-auto" style={{ maxHeight: alturaLista ? `${alturaLista}px` : 'calc(100vh - 300px)', minHeight: 320 }}>
+        <div ref={listaRef} className="w-full overflow-auto" style={{ maxHeight: alturaLista ? `${alturaLista}px` : 'calc(var(--alto-pantalla) - 300px)', minHeight: 320 }}>
           <table className="w-full text-left border-separate border-spacing-0">
             <thead>
               <tr>
@@ -1753,6 +1816,9 @@ export default function AuditoriaClient() {
               ) : (
                 filteredData.map((row) => {
                   const bordeFila = row.alerta_orden === 'DUPLICADA_CERRADA' ? 'border-b border-red-100' : 'border-b border-gray-100';
+                  const marca = marcasSmartflex[row.orden_trabajo];
+                  const porPasar = (marca?.pendientes ?? 0) > 0;
+                  const enSmartflex = !porPasar && (marca?.pasados ?? 0) > 0;
                   return (
                     <tr
                       key={row.orden_trabajo}
@@ -1774,7 +1840,7 @@ export default function AuditoriaClient() {
                     >
                       <td
                         className={`py-2 px-3 text-center ${bordeFila}`}
-                        style={row.alerta_orden === 'DUPLICADA_CERRADA' ? { boxShadow: 'inset 3px 0 0 #DC2626' } : undefined}
+                        style={row.alerta_orden === 'DUPLICADA_CERRADA' ? { boxShadow: 'inset 4px 0 0 #DC2626' } : porPasar ? { boxShadow: 'inset 4px 0 0 #B45309' } : undefined}
                       >
                         <input
                           type="checkbox"
@@ -1815,6 +1881,24 @@ export default function AuditoriaClient() {
                           <span aria-hidden="true" className={`w-2 h-2 rounded-full ${row.estado === 'Cancelada' ? 'bg-red-600' : 'bg-green-600'}`} />
                           {row.estado}
                         </span>
+                        {porPasar && (
+                          <p className="mt-1.5">
+                            <span
+                              className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[12px] font-semibold whitespace-nowrap"
+                              style={{ background: '#B45309', color: '#fff' }}
+                              title="Hay comentarios del técnico que aún no registras en Open Smartflex"
+                            >
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg>
+                              Pendiente en Smartflex{(marca?.pendientes ?? 0) > 1 ? ` · ${marca?.pendientes}` : ''}
+                            </span>
+                          </p>
+                        )}
+                        {enSmartflex && (
+                          <p className="mt-1.5 inline-flex items-center gap-1.5 text-[12px] font-medium whitespace-nowrap" style={{ color: '#475569' }} title="Todos los comentarios del técnico ya están registrados en Open Smartflex">
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#15803D" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5" /></svg>
+                            Registrado en Smartflex
+                          </p>
+                        )}
                         {row.alerta_orden === 'DUPLICADA_CERRADA' && (
                           <p className="mt-1 text-[12px] font-semibold text-red-700 tabular-nums">
                             Duplicada de #{String(row.orden_relacionada || '')}
@@ -1929,6 +2013,18 @@ export default function AuditoriaClient() {
                 <span className="font-medium text-gray-700">{to}</span> de{' '}
                 <span className="font-medium text-gray-700">{totalCount}</span> órdenes
               </p>
+              {Object.keys(marcasSmartflex).length > 0 && (
+              <div className="flex flex-wrap items-center gap-x-5 gap-y-1 text-[12px] text-slate-600">
+                <span className="inline-flex items-center gap-2">
+                  <span className="inline-flex items-center rounded-full px-2 py-0.5 font-semibold text-white" style={{ background: '#B45309' }}>Pendiente en Smartflex</span>
+                  falta registrar el comentario del técnico
+                </span>
+                <span className="inline-flex items-center gap-1.5">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#15803D" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5" /></svg>
+                  Registrado: ya está en Open Smartflex
+                </span>
+              </div>
+            )}
               <label className="flex items-center gap-2 text-sm text-gray-500">
                 Filas por página
                 <select
@@ -1990,7 +2086,7 @@ export default function AuditoriaClient() {
             aria-labelledby="reporte-titulo"
             className="reporte-modal flex flex-col overflow-hidden"
             style={{
-              width: 'min(1100px, 92vw)', height: 'min(860px, 90vh)', background: '#fff',
+              width: 'min(1100px, calc(var(--ancho-pantalla) * 0.92))', height: 'min(860px, calc(var(--alto-pantalla) * 0.9))', background: '#fff',
               border: '1px solid #E3E9F4', borderRadius: 14, boxShadow: '0 24px 60px -12px rgba(15,42,92,0.28)',
               fontFamily: 'inherit', color: '#0F2A5C',
             }}
@@ -2245,6 +2341,15 @@ export default function AuditoriaClient() {
                   </button>
                 </div>
 
+                {(() => {
+                  const nPend = historialAuditoria.filter((x: any) => x.smartflex === 'pendiente').length;
+                  return nPend > 0 ? (
+                    <div role="status" style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px', margin: '0 0 12px', borderRadius: 12, background: '#FFFBEB', border: '1px solid #F3D9A4', color: '#7A3E06', fontSize: 13, lineHeight: 1.4 }}>
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#B45309" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true" style={{ flexShrink: 0 }}><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg>
+                      <span><b style={{ fontWeight: 600 }}>{nPend === 1 ? '1 comentario pendiente' : `${nPend} comentarios pendientes`} en Smartflex.</b> Cópialo, pégalo en Open Smartflex y luego márcalo como registrado.</span>
+                    </div>
+                  ) : null;
+                })()}
                 {loadingHistorialAuditoria ? (
                   <div className="flex justify-center py-10">
                     <svg className="animate-spin h-6 w-6 text-blue-500" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
@@ -2277,6 +2382,7 @@ export default function AuditoriaClient() {
                                   {nombrePersona(h.autor_nombre || h.usuario)}
                                   {h.autor_rol && <> ({h.autor_rol})</>}
                                 </p>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
                                 {textoEntrada && (
                                   <button
                                     type="button"
@@ -2284,18 +2390,43 @@ export default function AuditoriaClient() {
                                       navigator.clipboard.writeText(textoEntrada);
                                       setEntradaCopiadaIndex(i);
                                       setTimeout(() => setEntradaCopiadaIndex((prev) => (prev === i ? null : prev)), 1800);
+                                      const hid = h.id as string | undefined;
+                                      if (hid) setCopiadasSf((prev) => (prev.includes(hid) ? prev : [...prev, hid]));
                                     }}
                                     style={{
                                       ...rpt.botonSecundario, flexShrink: 0, padding: '0 14px',
-                                      borderColor: entradaCopiadaIndex === i ? '#16A34A' : '#E3E9F4',
-                                      background: entradaCopiadaIndex === i ? '#F0FDF4' : '#fff',
-                                      color: entradaCopiadaIndex === i ? '#166534' : '#0F2A5C',
+                                      border: `1px solid ${entradaCopiadaIndex === i || (h.id && copiadasSf.includes(h.id)) ? '#15803D' : '#E3E9F4'}`,
+                                      background: entradaCopiadaIndex === i || (h.id && copiadasSf.includes(h.id)) ? '#F0FDF4' : '#fff',
+                                      color: entradaCopiadaIndex === i || (h.id && copiadasSf.includes(h.id)) ? '#166534' : '#0F2A5C',
                                     }}
                                   >
-                                    {entradaCopiadaIndex === i ? '¡Copiado!' : 'Copiar'}
+                                    {entradaCopiadaIndex === i ? '¡Copiado!' : (h.id && copiadasSf.includes(h.id)) ? 'Copiado' : 'Copiar'}
                                   </button>
                                 )}
+                                {h.smartflex && (
+                                  <button
+                                    type="button"
+                                    onClick={() => alternarSmartflex(h)}
+                                    title={h.smartflex === 'pendiente' ? 'Márcalo cuando ya lo hayas registrado en Open Smartflex' : 'Ya está en Open Smartflex. Clic para deshacer'}
+                                    style={
+                                      h.smartflex === 'pendiente'
+                                        ? (h.id && copiadasSf.includes(h.id)
+                                            ? { ...rpt.botonSecundario, flexShrink: 0, padding: '0 14px', border: '1px solid #0F2A5C', background: '#0F2A5C', color: '#fff', fontWeight: 600 }
+                                            : { ...rpt.botonSecundario, flexShrink: 0, padding: '0 14px', border: '1px solid #B45309', background: '#fff', color: '#92400E', fontWeight: 600 })
+                                        : { ...rpt.botonSecundario, flexShrink: 0, padding: '0 14px', display: 'inline-flex', alignItems: 'center', gap: 6, border: '1px solid #15803D', background: '#fff', color: '#475569' }
+                                    }
+                                  >
+                                    {h.smartflex === 'pendiente' ? 'Marcar como registrado' : (<><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#15803D" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5" /></svg> Registrado · Deshacer</>)}
+                                  </button>
+                                )}
+                                </div>
                               </div>
+
+                              {h.smartflex === 'pasado' && h.smartflex_pasado_en && (
+                                <p style={{ margin: '0 0 8px', fontSize: 12, color: '#475569' }}>
+                                  ✓ Registrado en Open Smartflex el {formatoFechaHora(h.smartflex_pasado_en)}{h.smartflex_pasado_por ? ` por ${h.smartflex_pasado_por}` : ''}
+                                </p>
+                              )}
 
                               {(h.estado === 'Cancelada' || h.estado === 'Incumplida') && h.causal_codigo && (
                                 <p style={{ margin: '0 0 8px', fontSize: 13, fontWeight: 600, color: '#B91C1C' }}>
@@ -2500,7 +2631,7 @@ export default function AuditoriaClient() {
 
               <div
                 className="overflow-auto rounded-lg"
-                style={{ width: '85vw', height: '80vh' }}
+                style={{ width: 'calc(var(--ancho-pantalla) * 0.85)', height: 'calc(var(--alto-pantalla) * 0.8)' }}
                 onWheel={handleWheelZoom}
                 onClick={(e) => e.stopPropagation()}
               >

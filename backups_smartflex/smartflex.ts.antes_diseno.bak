@@ -1,0 +1,108 @@
+'use client';
+
+import { useCallback, useEffect, useState } from 'react';
+import { supabase } from '@/lib/supabase';
+
+// Seguimiento de los comentarios de técnicos que hay que pasar a Open Smartflex.
+// Cada fila de historial_ordenes puede tener smartflex = 'pendiente' | 'pasado' | null.
+
+export type DestinoOrden = 'despacho' | 'auditoria';
+export type MarcaSmartflex = { pendientes: number; pasados: number };
+
+export const EVENTO_SMARTFLEX = 'hlgas:smartflex-cambio';
+export const EVENTO_ABRIR_ORDEN = 'hlgas:abrir-orden';
+const CLAVE_ABRIR = 'hlgas_abrir_orden';
+const VIGENCIA_ABRIR_MS = 30_000;
+
+// Avisa a las tablas (filas) y a la campana que algo cambió, para que se refresquen.
+export const avisarCambioSmartflex = () => {
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event(EVENTO_SMARTFLEX));
+};
+
+// La campana pide abrir una orden en su modal. Si ya estás en esa pantalla se abre al instante;
+// si no, la pantalla destino la recoge al cargar (tomarOrdenPorAbrir).
+export const pedirAbrirOrden = (orden: string, destino: DestinoOrden) => {
+  try {
+    sessionStorage.setItem(CLAVE_ABRIR, JSON.stringify({ orden, destino, t: Date.now() }));
+  } catch {
+    /* sin almacenamiento: solo funcionará si ya estás en la pantalla destino */
+  }
+  window.dispatchEvent(new CustomEvent(EVENTO_ABRIR_ORDEN, { detail: { orden, destino } }));
+};
+
+// Devuelve (y borra) la orden pendiente de abrir para esta pantalla, o null.
+export const tomarOrdenPorAbrir = (destino: DestinoOrden): string | null => {
+  try {
+    const crudo = sessionStorage.getItem(CLAVE_ABRIR);
+    if (!crudo) return null;
+    const v = JSON.parse(crudo) as { orden?: string; destino?: string; t?: number };
+    if (v.destino !== destino || !v.orden) return null;
+    sessionStorage.removeItem(CLAVE_ABRIR);
+    if (typeof v.t === 'number' && Date.now() - v.t > VIGENCIA_ABRIR_MS) return null;
+    return v.orden;
+  } catch {
+    return null;
+  }
+};
+
+// Marca un comentario como pasado a Smartflex (pasado = true) o lo devuelve a pendiente (false).
+// Devuelve false si no se pudo guardar (por ejemplo, permisos).
+export const marcarSmartflex = async (
+  idHistorial: string,
+  pasado: boolean,
+  email?: string | null
+): Promise<boolean> => {
+  const { data, error } = await supabase
+    .from('historial_ordenes')
+    .update({
+      smartflex: pasado ? 'pasado' : 'pendiente',
+      smartflex_visto: true,
+      smartflex_pasado_por: pasado ? email ?? null : null,
+      smartflex_pasado_en: pasado ? new Date().toISOString() : null,
+    })
+    .eq('id', idHistorial)
+    .select('id');
+  if (error || !data || data.length === 0) return false;
+  avisarCambioSmartflex();
+  return true;
+};
+
+// Para una lista de órdenes visibles: cuántos comentarios pendientes / pasados tiene cada una.
+export const useMarcasSmartflex = (ordenIds: string[]): Record<string, MarcaSmartflex> => {
+  const [marcas, setMarcas] = useState<Record<string, MarcaSmartflex>>({});
+  const clave = ordenIds.join('|');
+
+  const cargar = useCallback(async () => {
+    if (!clave) {
+      setMarcas({});
+      return;
+    }
+    const { data, error } = await supabase
+      .from('historial_ordenes')
+      .select('orden_trabajo, smartflex')
+      .in('orden_trabajo', clave.split('|'))
+      .not('smartflex', 'is', null);
+    if (error || !data) return;
+    const m: Record<string, MarcaSmartflex> = {};
+    for (const r of data as { orden_trabajo: string; smartflex: string }[]) {
+      const x = (m[r.orden_trabajo] ??= { pendientes: 0, pasados: 0 });
+      if (r.smartflex === 'pendiente') x.pendientes += 1;
+      else if (r.smartflex === 'pasado') x.pasados += 1;
+    }
+    setMarcas(m);
+  }, [clave]);
+
+  useEffect(() => {
+    cargar();
+  }, [cargar]);
+
+  useEffect(() => {
+    const alCambiar = () => {
+      cargar();
+    };
+    window.addEventListener(EVENTO_SMARTFLEX, alCambiar);
+    return () => window.removeEventListener(EVENTO_SMARTFLEX, alCambiar);
+  }, [cargar]);
+
+  return marcas;
+};

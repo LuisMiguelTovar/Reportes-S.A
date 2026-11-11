@@ -1,5 +1,6 @@
 'use client';
 
+import { ESCALA_PANEL } from '@/lib/escala';
 import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/contexts/AuthContext';
@@ -7,6 +8,13 @@ import UploadExcelButton from '@/components/UploadExcelButton';
 import UserProfile from '@/components/UserProfile';
 import NotificationsBell from '@/components/NotificationsBell';
 import { useArea } from '@/components/AreaProvider';
+import {
+  useMarcasSmartflex,
+  formatoFechaHora,
+  marcarSmartflex,
+  tomarOrdenPorAbrir,
+  EVENTO_ABRIR_ORDEN,
+} from '@/lib/smartflex';
 import toast from 'react-hot-toast';
 import FiltroLista, { nombreTitulo, etiquetaTrabajo } from '@/components/FiltroLista';
 import TecnicoCombobox from '@/components/TecnicoCombobox';
@@ -47,6 +55,10 @@ type Tecnico = {
 };
 
 type HistorialEntry = {
+  id?: string;
+  smartflex?: 'pendiente' | 'pasado' | null;
+  smartflex_pasado_por?: string | null;
+  smartflex_pasado_en?: string | null;
   orden_trabajo: string;
   estado: string;
   comentario?: string;
@@ -836,16 +848,20 @@ export default function DespachoTableClient() {
   };
 
   const copiarTextoHistorial = (entry: HistorialEntry) => {
-    const partes = [
-      new Date(entry.fecha).toLocaleDateString('es-CO', { timeZone: 'America/Bogota' }),
-      `Técnico: ${entry.autor_nombre || entry.usuario}`,
-    ];
-    if (entry.comentario) partes.push(`Comentario: ${entry.comentario}`);
-    if (entry.atendido_por) partes.push(`Atendido por: ${entry.atendido_por}`);
-    if (entry.estado === 'Programada' && entry.fecha_programada) {
-      partes.push(`Fecha estimada de atención: ${formatearFechaPura(entry.fecha_programada)}`);
+    // Un solo párrafo. Programada: fecha · técnico / observación atiende NOMBRE
+    const fecha = new Date(entry.fecha).toLocaleDateString('es-CO', { timeZone: 'America/Bogota' });
+    const esProgramada = entry.estado === 'Programada';
+    let observacion = (entry.comentario ?? '').replace(/\s*\n+\s*/g, ' ');
+    if (esProgramada) observacion = observacion.replace(/\s*Atendido por:?\s*/gi, ' atiende ').replace(/\s{2,}/g, ' ');
+    observacion = observacion.trim();
+    let texto = `${fecha} · ${entry.autor_nombre || entry.usuario}`;
+    if (observacion) texto += ` / ${observacion}`;
+    if (esProgramada) {
+      if (entry.atendido_por && !/atiende/i.test(observacion)) texto += ` atiende ${entry.atendido_por}`;
+      if (entry.fecha_programada && !observacion) texto += ` / programada para el ${formatearFechaPura(entry.fecha_programada)}`;
+    } else {
+      if (entry.atendido_por && !/atendido por/i.test(observacion)) texto += ` Atendido por: ${entry.atendido_por}`;
     }
-    const texto = partes.join('\n');
     navigator.clipboard.writeText(texto);
   };
 
@@ -1181,7 +1197,8 @@ export default function DespachoTableClient() {
       if (!el) return;
       const arriba = el.getBoundingClientRect().top + window.scrollY;
       const pie = footerRef.current ? footerRef.current.offsetHeight + 16 : 0;
-      setAlturaLista(Math.max(320, Math.floor(window.innerHeight - arriba - pie - 48)));
+      // getBoundingClientRect/innerHeight vienen en píxeles reales de pantalla; el resto en unidades con zoom
+      setAlturaLista(Math.max(320, Math.floor((window.innerHeight - arriba) / ESCALA_PANEL - pie - 48)));
     };
     const id = requestAnimationFrame(calcular);
     window.addEventListener('resize', calcular);
@@ -1278,6 +1295,53 @@ export default function DespachoTableClient() {
     toast.success(`Orden ${o.orden_trabajo}: alerta retirada`);
     fetchOrdenes();
   };
+
+  // ── Seguimiento de comentarios para Open Smartflex ──
+  const marcasSmartflex = useMarcasSmartflex(ordenes.map((o) => o.orden_trabajo));
+  const [copiadasSf, setCopiadasSf] = useState<string[]>([]); // comentarios ya copiados (para resaltar «Marcar como registrado»)
+
+  // Botón del modal: pendiente ⇄ pasado
+  const alternarSmartflex = async (entry: HistorialEntry) => {
+    if (!entry.id || !entry.smartflex) return;
+    const pasar = entry.smartflex === 'pendiente';
+    const ok = await marcarSmartflex(entry.id, pasar, user?.email);
+    if (!ok) {
+      toast.error('No se pudo actualizar la marca de Smartflex.');
+      return;
+    }
+    setHistorial((prev) => prev.map((h) => (h.id === entry.id ? { ...h, smartflex: pasar ? 'pasado' : 'pendiente', smartflex_pasado_por: pasar ? (user?.email ?? null) : null, smartflex_pasado_en: pasar ? new Date().toISOString() : null } : h)));
+  };
+
+  // Abrir una orden desde la campana (doble clic en un aviso)
+  const abrirOrdenRef = useRef<(o: Orden) => void>(() => {});
+  abrirOrdenRef.current = (o: Orden) => { abrirReporte(o); };
+  useEffect(() => {
+    const abrirPorNumero = async (numero: string) => {
+      const { data } = await supabase
+        .from('ordenes')
+        .select('*')
+        .eq('orden_trabajo', numero)
+        .eq('area', area)
+        .maybeSingle();
+      if (!data) {
+        toast.error(`No se encontró la orden ${numero}.`);
+        return;
+      }
+      abrirOrdenRef.current(data as Orden);
+    };
+    // Llegaste desde otra pantalla: la orden quedó guardada para esta
+    const guardada = tomarOrdenPorAbrir('despacho');
+    if (guardada) abrirPorNumero(guardada);
+    // Ya estabas aquí: la campana avisa por evento
+    const alPedir = (e: Event) => {
+      const d = (e as CustomEvent<{ orden?: string; destino?: string }>).detail;
+      if (d?.destino !== 'despacho' || !d.orden) return;
+      tomarOrdenPorAbrir('despacho'); // limpia lo guardado
+      abrirPorNumero(d.orden);
+    };
+    window.addEventListener(EVENTO_ABRIR_ORDEN, alPedir);
+    return () => window.removeEventListener(EVENTO_ABRIR_ORDEN, alPedir);
+  }, [area]);
 
   const isAllVisibleSelected = ordenes.length > 0 && ordenes.every(o => selectedOrdenes.includes(o.orden_trabajo));
 
@@ -1548,7 +1612,7 @@ export default function DespachoTableClient() {
                   ref={panelFiltrosRef}
                   role="dialog"
                   aria-label="Filtros"
-                  style={{ position: 'absolute', right: 16, top: 70, width: 620, maxWidth: 'calc(100vw - 48px)', background: '#fff', border: '1px solid #E3E9F4', borderRadius: 14, boxShadow: '0 16px 40px rgba(15,42,92,0.18)', zIndex: 40 }}
+                  style={{ position: 'absolute', right: 16, top: 70, width: 620, maxWidth: 'calc(var(--ancho-pantalla) - 48px)', background: '#fff', border: '1px solid #E3E9F4', borderRadius: 14, boxShadow: '0 16px 40px rgba(15,42,92,0.18)', zIndex: 40 }}
                 >
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '16px 20px 4px' }}>
                     <h2 style={{ margin: 0, fontSize: 16, fontWeight: 600, color: '#0F2A5C' }}>Filtros</h2>
@@ -1704,7 +1768,7 @@ export default function DespachoTableClient() {
         <div
           ref={listaRef}
           className="w-full overflow-auto"
-          style={{ maxHeight: alturaLista ? `${alturaLista}px` : 'calc(100vh - 330px)', minHeight: 320 }}
+          style={{ maxHeight: alturaLista ? `${alturaLista}px` : 'calc(var(--alto-pantalla) - 330px)', minHeight: 320 }}
         >
           <table className={`w-full ${mostrarAlerta ? 'min-w-[1320px]' : 'min-w-[1160px]'} text-left border-separate border-spacing-0 [&_tbody_td]:border-b [&_tbody_td]:border-[#EEF2F8]`}>
             <thead className="sticky top-0 z-20 bg-gray-50 shadow-[0_1px_0_#E2E8F0]">
@@ -2051,18 +2115,33 @@ export default function DespachoTableClient() {
 
                   const esPosibleDup = row.alerta_orden === 'POSIBLE_DUPLICADA' && (row.estado === 'Pendiente' || row.estado === 'Programada');
                   const relDup = String(row.orden_relacionada || '');
+                  const marca = marcasSmartflex[row.orden_trabajo];
+                  const porPasar = (marca?.pendientes ?? 0) > 0;
+                  const enSmartflex = !porPasar && (marca?.pasados ?? 0) > 0;
 
                   return (
                   <React.Fragment key={row.orden_trabajo}>
                   <tr
-                    className="border-b border-[#F1F5F9] hover:bg-[#F8FAFC] transition-colors duration-150"
-                    style={
-                      esPosibleDup
-                        ? { height: '72px', background: '#FFF5F5', boxShadow: 'inset 3px 0 0 #DC2626' }
-                        : selectedOrdenes.includes(row.orden_trabajo)
-                          ? { height: '72px', background: '#F0F6FF' }
-                          : { height: '72px' }
-                    }
+                    tabIndex={0}
+                    title="Doble clic para abrir el reporte · Enter con el teclado"
+                    onDoubleClick={(e) => {
+                      // No abrir si el doble clic fue sobre la casilla, un botón o el menú ⋮
+                      if ((e.target as HTMLElement).closest('input, button, a, label, .menu-pop')) return;
+                      window.getSelection()?.removeAllRanges();
+                      abrirReporte(row);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && e.target === e.currentTarget) {
+                        e.preventDefault();
+                        abrirReporte(row);
+                      }
+                    }}
+                    className={`cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-blue-600 border-b border-[#F1F5F9] transition-colors duration-150 ${!esPosibleDup && row.estado === 'Programada' ? 'bg-[#FFFBEB] hover:bg-[#FEF3C7]' : 'hover:bg-[#F8FAFC]'}`}
+                    style={{
+                      height: '72px',
+                      background: esPosibleDup ? '#FFF5F5' : selectedOrdenes.includes(row.orden_trabajo) ? '#F0F6FF' : undefined,
+                      boxShadow: esPosibleDup ? 'inset 4px 0 0 #DC2626' : porPasar ? 'inset 4px 0 0 #B45309' : undefined,
+                    }}
                   >
                     <td className="py-2.5 px-2.5">
                       <input
@@ -2109,6 +2188,24 @@ export default function DespachoTableClient() {
                         />
                         {getEstadoBadge(row.estado).label}
                       </span>
+                      {porPasar && (
+                        <p className="mt-1.5">
+                          <span
+                            className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[12px] font-semibold whitespace-nowrap"
+                            style={{ background: '#B45309', color: '#fff' }}
+                            title="Hay comentarios del técnico que aún no registras en Open Smartflex"
+                          >
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg>
+                            Pendiente en Smartflex{(marca?.pendientes ?? 0) > 1 ? ` · ${marca?.pendientes}` : ''}
+                          </span>
+                        </p>
+                      )}
+                      {enSmartflex && (
+                        <p className="mt-1.5 inline-flex items-center gap-1.5 text-[12px] font-medium whitespace-nowrap" style={{ color: '#475569' }} title="Todos los comentarios del técnico ya están registrados en Open Smartflex">
+                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#15803D" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5" /></svg>
+                          Registrado en Smartflex
+                        </p>
+                      )}
                     </td>
                     {mostrarAlerta && (
                     <td className="py-2.5 px-2.5 align-middle">
@@ -2277,6 +2374,18 @@ export default function DespachoTableClient() {
                 </>
               )}
             </p>
+            {Object.keys(marcasSmartflex).length > 0 && (
+              <div className="flex flex-wrap items-center gap-x-5 gap-y-1 text-[12px] text-slate-600">
+                <span className="inline-flex items-center gap-2">
+                  <span className="inline-flex items-center rounded-full px-2 py-0.5 font-semibold text-white" style={{ background: '#B45309' }}>Pendiente en Smartflex</span>
+                  falta registrar el comentario del técnico
+                </span>
+                <span className="inline-flex items-center gap-1.5">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#15803D" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5" /></svg>
+                  Registrado: ya está en Open Smartflex
+                </span>
+              </div>
+            )}
             <div className="flex items-center gap-2">
               {ordenes.length < totalCount && limite < MAX_FILAS && (
                 <button
@@ -2317,7 +2426,7 @@ export default function DespachoTableClient() {
             aria-modal="true"
             aria-labelledby="confirm-dup-titulo"
             onClick={(e) => e.stopPropagation()}
-            style={{ width: '100%', maxWidth: 560, maxHeight: '90vh', display: 'flex', flexDirection: 'column', background: '#fff', borderRadius: 14, boxShadow: '0 24px 60px rgba(15,42,92,0.25)', overflow: 'hidden' }}
+            style={{ width: '100%', maxWidth: 560, maxHeight: 'calc(var(--alto-pantalla) * 0.9)', display: 'flex', flexDirection: 'column', background: '#fff', borderRadius: 14, boxShadow: '0 24px 60px rgba(15,42,92,0.25)', overflow: 'hidden' }}
           >
             <div style={{ padding: '20px 24px 12px' }}>
               <h2 id="confirm-dup-titulo" style={{ margin: 0, fontSize: 18, fontWeight: 600, color: '#0F2A5C' }}>
@@ -2462,8 +2571,8 @@ export default function DespachoTableClient() {
               backgroundColor: '#F7F9FC',
               borderRadius: '14px',
               boxShadow: '0 24px 60px -12px rgba(15,42,92,0.28)',
-              width: 'min(70vw, 1200px)',
-              maxHeight: '90vh',
+              width: 'min(calc(var(--ancho-pantalla) * 0.7), 1200px)',
+              maxHeight: 'calc(var(--alto-pantalla) * 0.9)',
               fontFamily: 'Inter, system-ui, -apple-system, sans-serif',
             }}
           >
@@ -2810,6 +2919,15 @@ export default function DespachoTableClient() {
                   HISTORIAL DE ATENCIÓN
                  ══════════════════════════════════════════════════════════ */}
               <div style={{ marginTop: '8px' }}>
+                {(() => {
+                  const nPend = historial.filter((x: any) => x.smartflex === 'pendiente').length;
+                  return nPend > 0 ? (
+                    <div role="status" style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px', margin: '0 0 12px', borderRadius: 12, background: '#FFFBEB', border: '1px solid #F3D9A4', color: '#7A3E06', fontSize: 13, lineHeight: 1.4 }}>
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#B45309" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true" style={{ flexShrink: 0 }}><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg>
+                      <span><b style={{ fontWeight: 600 }}>{nPend === 1 ? '1 comentario pendiente' : `${nPend} comentarios pendientes`} en Smartflex.</b> Cópialo, pégalo en Open Smartflex y luego márcalo como registrado.</span>
+                    </div>
+                  ) : null;
+                })()}
                 {loadingHistorial ? (
                   <div className="flex items-center justify-center py-10">
                     <svg className="animate-spin h-6 w-6" style={{ color: '#1A4D8F' }} xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
@@ -2912,19 +3030,51 @@ export default function DespachoTableClient() {
                                   )}
                                 </span>
 
-                                <button
-                                  onClick={(e) => { e.stopPropagation(); copiarTextoHistorial(entry); }}
-                                  style={{
-                                    marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '4px',
-                                    minHeight: 44, padding: '0 14px', background: '#fff', border: '1px solid #E3E9F4', borderRadius: '8px',
-                                    cursor: 'pointer', fontSize: '12px', color: '#374151', fontWeight: 500,
-                                  }}
-                                >
-                                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                    <rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
-                                  </svg>
-                                  Copiar
-                                </button>
+                                {(() => {
+                                  const copiado = !!entry.id && copiadasSf.includes(entry.id);
+                                  return (
+                                    <>
+                                      <button
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          copiarTextoHistorial(entry);
+                                          const eid = entry.id;
+                                          if (eid) setCopiadasSf((prev) => (prev.includes(eid) ? prev : [...prev, eid]));
+                                        }}
+                                        style={{
+                                          marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '4px',
+                                          minHeight: 44, padding: '0 14px', background: copiado ? '#F0FDF4' : '#fff', border: `1px solid ${copiado ? '#15803D' : '#E3E9F4'}`, borderRadius: '8px',
+                                          cursor: 'pointer', fontSize: '12px', color: copiado ? '#166534' : '#374151', fontWeight: 500,
+                                        }}
+                                      >
+                                        {copiado ? (
+                                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5" /></svg>
+                                        ) : (
+                                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                            <rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
+                                          </svg>
+                                        )}
+                                        {copiado ? 'Copiado' : 'Copiar'}
+                                      </button>
+                                      {entry.smartflex && (
+                                        <button
+                                          type="button"
+                                          onClick={(e) => { e.stopPropagation(); alternarSmartflex(entry); }}
+                                          title={entry.smartflex === 'pendiente' ? 'Márcalo cuando ya lo hayas registrado en Open Smartflex' : 'Ya está en Open Smartflex. Clic para deshacer'}
+                                          style={
+                                            entry.smartflex === 'pendiente'
+                                              ? (copiado
+                                                  ? { display: 'flex', alignItems: 'center', gap: '6px', minHeight: 44, padding: '0 14px', background: '#0F2A5C', border: '1px solid #0F2A5C', borderRadius: '8px', cursor: 'pointer', fontSize: '12px', color: '#fff', fontWeight: 600 }
+                                                  : { display: 'flex', alignItems: 'center', gap: '6px', minHeight: 44, padding: '0 14px', background: '#fff', border: '1px solid #B45309', borderRadius: '8px', cursor: 'pointer', fontSize: '12px', color: '#92400E', fontWeight: 600 })
+                                              : { display: 'flex', alignItems: 'center', gap: '6px', minHeight: 44, padding: '0 14px', background: '#fff', border: '1px solid #15803D', borderRadius: '8px', cursor: 'pointer', fontSize: '12px', color: '#475569', fontWeight: 500 }
+                                          }
+                                        >
+                                          {entry.smartflex === 'pendiente' ? 'Marcar como registrado' : (<><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#15803D" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5" /></svg> Registrado · Deshacer</>)}
+                                        </button>
+                                      )}
+                                    </>
+                                  );
+                                })()}
                                 <button
                                   onClick={(e) => { e.stopPropagation(); toggleExpand(); }}
                                   style={{
@@ -2943,6 +3093,11 @@ export default function DespachoTableClient() {
                                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
                                   </svg>
                                 </button>
+                                {entry.smartflex === 'pasado' && entry.smartflex_pasado_en && (
+                                  <span style={{ flexBasis: '100%', fontSize: 12, color: '#475569' }}>
+                                    ✓ Registrado en Open Smartflex el {formatoFechaHora(entry.smartflex_pasado_en)}{entry.smartflex_pasado_por ? ` por ${entry.smartflex_pasado_por}` : ''}
+                                  </span>
+                                )}
                               </div>
 
                               {/* Expandable content */}
@@ -2956,7 +3111,7 @@ export default function DespachoTableClient() {
                                     {/* Texto plano — fecha, causal y técnico ya están en el encabezado de la tarjeta */}
                                     {entry.comentario ? (
                                       <p style={{ fontSize: '14px', color: '#24324A', lineHeight: 1.7, whiteSpace: 'pre-wrap', margin: 0 }}>
-                                        {entry.comentario}
+                                        {(entry.estado === 'Programada' ? entry.comentario.replace(/\s*\n+\s*/g, ' ').replace(/\s*Atendido por:?\s*/gi, ' atiende ').replace(/\s{2,}/g, ' ') : entry.comentario.replace(/\s*\n+\s*/g, ' ')).trim()}
                                       </p>
                                     ) : (
                                       <p style={{ fontSize: '13px', color: '#9CA3AF', fontStyle: 'italic', margin: 0 }}>
@@ -3382,7 +3537,7 @@ export default function DespachoTableClient() {
 
           <div
             className="overflow-auto rounded-lg"
-            style={{ width: 'min(900px, 85vw)', height: '75vh' }}
+            style={{ width: 'min(900px, calc(var(--ancho-pantalla) * 0.85))', height: 'calc(var(--alto-pantalla) * 0.75)' }}
             onWheel={handleWheelZoom}
             onClick={(e) => e.stopPropagation()}
           >

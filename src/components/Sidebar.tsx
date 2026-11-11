@@ -84,7 +84,7 @@ export default function Sidebar() {
     <aside
       className={`${
         colapsado ? 'w-[72px]' : 'w-64'
-      } bg-[#0F172A] text-slate-300 flex flex-col h-screen flex-shrink-0 overflow-hidden transition-[width] duration-200`}
+      } bg-[#0F172A] text-slate-300 flex flex-col h-full flex-shrink-0 overflow-hidden transition-[width] duration-200`}
     >
       <div className={`border-b border-slate-800/60 py-4 ${colapsado ? 'px-2' : 'px-5'}`}>
         <div className={`flex items-center ${colapsado ? 'flex-col gap-3' : 'justify-between gap-3'}`}>

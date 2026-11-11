@@ -8,11 +8,12 @@ body {
   background-color: #f9fafb;
 }
 
-/* Escala general de la interfaz: ~90% del tamaño por defecto.
-   Para ajustar el tamaño de TODO el panel cambia solo este porcentaje
-   (por ejemplo 85% más pequeño, 95% casi normal, 100% sin escala). */
+/* Escala general de la interfaz: 85% (la escala real se define en layout.tsx (ESCALA_PANEL), pero solo para este panel).
+   `zoom` escala TODO, tanto lo escrito en rem como lo escrito en px.
+   Para cambiar el tamaño de todo el panel modifica solo este número:
+   0.85 más pequeño · 0.95 casi normal · 1 sin escala. */
 html {
-  font-size: 90%;
+  zoom: 0.85;
 }
 
 /* Foco visible para navegación con teclado (botones, enlaces y controles sin anillo propio) */

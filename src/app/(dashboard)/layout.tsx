@@ -27,7 +27,7 @@ export default function DashboardLayout({
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        height: '100vh',
+        height: 'var(--alto-pantalla)',
         background: '#f9fafb',
       }}>
         <div style={{
