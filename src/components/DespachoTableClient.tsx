@@ -2138,7 +2138,7 @@ export default function DespachoTableClient() {
                         abrirReporte(row);
                       }
                     }}
-                    className={`cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-blue-600 border-b border-[#F1F5F9] transition-colors duration-150 ${!esPosibleDup && row.estado === 'Programada' ? 'bg-[#FFFBEB] hover:bg-[#FEF3C7]' : 'hover:bg-[#F8FAFC]'}`}
+                    className={`cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-blue-600 border-b border-[#F1F5F9] transition-colors duration-150 ${!esPosibleDup && row.estado === 'Programada' && !enSmartflex ? 'bg-[#FFFBEB] hover:bg-[#FEF3C7]' : 'hover:bg-[#F8FAFC]'}`}
                     style={{
                       height: '72px',
                       background: esPosibleDup ? '#FFF5F5' : selectedOrdenes.includes(row.orden_trabajo) ? '#F0F6FF' : undefined,

@@ -13,6 +13,7 @@ import FiltroLista from '@/components/FiltroLista';
 import ExcelColumnFilter, { ColumnTextFilter, ColumnDateFilter } from '@/components/ExcelColumnFilter';
 import { useArea } from '@/components/AreaProvider';
 import { useAuth } from '@/contexts/AuthContext';
+import RecepcionModal from '@/components/RecepcionModal';
 import {
   useMarcasSmartflex,
   formatoFechaHora,
@@ -229,6 +230,7 @@ export default function AuditoriaClient() {
   const [loadingHistorialAuditoria, setLoadingHistorialAuditoria] = useState(false);
   const [selectedOrders, setSelectedOrders] = useState<string[]>([]);
   const [isDownloading, setIsDownloading] = useState(false);
+  const [mostrarRecepcion, setMostrarRecepcion] = useState(false);
   const [isReopening, setIsReopening] = useState<string | null>(null);
   const [descargandoFotos, setDescargandoFotos] = useState(false);
   const [ordenes, setOrdenes] = useState<Orden[]>([]);
@@ -1088,7 +1090,7 @@ export default function AuditoriaClient() {
     // en qué columna empiezan "Foto 1", "Foto 2", etc.)
     // Fecha Cierre, Nº Orden, Contrato, Dirección, Barrio, Tipo de Trabajo,
     // Estado, Técnico, Causal de Cierre, Comentario = 10 columnas fijas.
-    const NUM_COLUMNAS_FIJAS = 11; // + Localidad
+    const NUM_COLUMNAS_FIJAS = 12; // + Localidad + Fecha de Recepción
 
     const exportData = allFiltered.map((row: any, idx: number) => {
       const cierre = cierrePorOrden[row.orden_trabajo];
@@ -1118,6 +1120,9 @@ export default function AuditoriaClient() {
           minute: '2-digit',
           hour12: true
         }) : 'Sin fecha',
+        'Fecha de Recepción': row.fecha_recepcion
+          ? new Date(row.fecha_recepcion).toLocaleDateString('es-CO', { timeZone: 'America/Bogota', day: '2-digit', month: '2-digit', year: 'numeric' })
+          : '',
         'Nº Orden': row.orden_trabajo,
         'Contrato': row.contrato,
         'Dirección': row.direccion || '',
@@ -1283,6 +1288,15 @@ export default function AuditoriaClient() {
           >
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
             Descargar Reporte (Excel)
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setMostrarRecepcion(true)}
+            className="border border-gray-300 text-gray-700 hover:bg-gray-50 px-5 py-2.5 rounded-lg shadow-sm font-medium transition-colors flex items-center gap-2 text-sm"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+            Recepción
           </button>
 
           <div className="h-8 w-px bg-gray-200"></div>
@@ -2659,6 +2673,14 @@ export default function AuditoriaClient() {
               )}
             </div>
           )}
+
+      {mostrarRecepcion && (
+        <RecepcionModal
+          area={area}
+          email={user?.email ?? ''}
+          onClose={() => setMostrarRecepcion(false)}
+        />
+      )}
     </div>
   );
 }
