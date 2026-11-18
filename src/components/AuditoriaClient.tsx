@@ -14,6 +14,7 @@ import ExcelColumnFilter, { ColumnTextFilter, ColumnDateFilter } from '@/compone
 import { useArea } from '@/components/AreaProvider';
 import { useAuth } from '@/contexts/AuthContext';
 import RecepcionModal from '@/components/RecepcionModal';
+import UnirRcModal from '@/components/UnirRcModal';
 import {
   useMarcasSmartflex,
   formatoFechaHora,
@@ -231,6 +232,7 @@ export default function AuditoriaClient() {
   const [selectedOrders, setSelectedOrders] = useState<string[]>([]);
   const [isDownloading, setIsDownloading] = useState(false);
   const [mostrarRecepcion, setMostrarRecepcion] = useState(false);
+  const [mostrarUnirRc, setMostrarUnirRc] = useState(false);
   const [isReopening, setIsReopening] = useState<string | null>(null);
   const [descargandoFotos, setDescargandoFotos] = useState(false);
   const [ordenes, setOrdenes] = useState<Orden[]>([]);
@@ -1299,6 +1301,15 @@ export default function AuditoriaClient() {
             Recepción
           </button>
 
+          <button
+            type="button"
+            onClick={() => setMostrarUnirRc(true)}
+            className="border border-gray-300 text-gray-700 hover:bg-gray-50 px-5 py-2.5 rounded-lg shadow-sm font-medium transition-colors flex items-center gap-2 text-sm"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+            Unir RC + fotos
+          </button>
+
           <div className="h-8 w-px bg-gray-200"></div>
 
           <NotificationsBell />
@@ -1850,7 +1861,7 @@ export default function AuditoriaClient() {
                           abrirFila(row);
                         }
                       }}
-                      className={`transition-colors cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-blue-600 ${row.alerta_orden === 'DUPLICADA_CERRADA' ? 'bg-red-50 hover:bg-red-100/70' : 'hover:bg-gray-50'}`}
+                      className={`transition-colors cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-blue-600 ${row.alerta_orden === 'DUPLICADA_CERRADA' ? 'bg-red-50 hover:bg-red-100/70' : row.fecha_recepcion ? 'bg-[#F0FAF8] hover:bg-[#E2F3EF]' : 'hover:bg-gray-50'}`}
                     >
                       <td
                         className={`py-2 px-3 text-center ${bordeFila}`}
@@ -1874,7 +1885,20 @@ export default function AuditoriaClient() {
                           hour12: true
                         }) : 'Sin fecha'}
                       </td>
-                      <td className={`py-2 px-3 font-medium text-gray-900 ${bordeFila}`}>{row.orden_trabajo}</td>
+                      <td className={`py-2 px-3 font-medium text-gray-900 ${bordeFila}`}>
+                        <span className="inline-flex items-center gap-1.5">
+                          {row.orden_trabajo}
+                          {row.fecha_recepcion && (
+                            <span
+                              className="inline-flex text-teal-700"
+                              title={`Recibida en físico el ${new Date(row.fecha_recepcion).toLocaleDateString('es-CO', { timeZone: 'America/Bogota', day: '2-digit', month: '2-digit', year: 'numeric' })}`}
+                            >
+                              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M14 3H7a2 2 0 00-2 2v14a2 2 0 002 2h10a2 2 0 002-2V8z" /><path d="M14 3v5h5" /><path d="M9 14.5l2 2 4-4" /></svg>
+                              <span className="sr-only">Recibida en físico el {new Date(row.fecha_recepcion).toLocaleDateString('es-CO', { timeZone: 'America/Bogota', day: '2-digit', month: '2-digit', year: 'numeric' })}</span>
+                            </span>
+                          )}
+                        </span>
+                      </td>
                       <td className={`py-2 px-3 text-gray-500 ${bordeFila}`}>{row.contrato}</td>
                       <td className={`py-2 px-3 text-gray-500 max-w-[180px] truncate ${bordeFila}`} title={row.direccion || '-'}>{row.direccion || '-'}</td>
                       <td className={`py-2 px-3 text-gray-500 max-w-[180px] truncate ${bordeFila}`} title={row.barrio || '-'}>{tituloEs((row.barrio ?? '').replace(/^\s*\d+\s*-\s*/, '')) || '-'}</td>
@@ -2039,6 +2063,14 @@ export default function AuditoriaClient() {
                 </span>
               </div>
             )}
+              {ordenes.some((o: any) => o.fecha_recepcion) && (
+                <span className="inline-flex items-center gap-1.5 text-[12px] text-slate-600">
+                  <span className="inline-flex items-center justify-center rounded text-teal-700" style={{ background: '#F0FAF8', border: '1px solid #BFE5DD', width: 22, height: 18 }}>
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M14 3H7a2 2 0 00-2 2v14a2 2 0 002 2h10a2 2 0 002-2V8z" /><path d="M14 3v5h5" /><path d="M9 14.5l2 2 4-4" /></svg>
+                  </span>
+                  Recibida en físico
+                </span>
+              )}
               <label className="flex items-center gap-2 text-sm text-gray-500">
                 Filas por página
                 <select
@@ -2674,11 +2706,15 @@ export default function AuditoriaClient() {
             </div>
           )}
 
+      {mostrarUnirRc && (
+        <UnirRcModal area={area} onClose={() => setMostrarUnirRc(false)} />
+      )}
+
       {mostrarRecepcion && (
         <RecepcionModal
           area={area}
           email={user?.email ?? ''}
-          onClose={() => setMostrarRecepcion(false)}
+          onClose={() => { setMostrarRecepcion(false); fetchOrdenes(); }}
         />
       )}
     </div>
