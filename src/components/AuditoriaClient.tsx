@@ -1122,8 +1122,19 @@ export default function AuditoriaClient() {
           minute: '2-digit',
           hour12: true
         }) : 'Sin fecha',
+        // Con hora, igual que «Fecha Cierre». Si la fecha se puso a mano (se guarda a las 12:00 en punto), solo la fecha.
         'Fecha de Recepción': row.fecha_recepcion
-          ? new Date(row.fecha_recepcion).toLocaleDateString('es-CO', { timeZone: 'America/Bogota', day: '2-digit', month: '2-digit', year: 'numeric' })
+          ? (() => {
+              const d = new Date(row.fecha_recepcion);
+              const fechaManual = d.getUTCHours() === 17 && d.getUTCMinutes() === 0 && d.getUTCSeconds() === 0 && d.getUTCMilliseconds() === 0;
+              return d.toLocaleString('es-CO', {
+                timeZone: 'America/Bogota',
+                day: '2-digit',
+                month: '2-digit',
+                year: 'numeric',
+                ...(fechaManual ? {} : { hour: '2-digit', minute: '2-digit', hour12: true }),
+              });
+            })()
           : '',
         'Nº Orden': row.orden_trabajo,
         'Contrato': row.contrato,
