@@ -19,6 +19,7 @@ import {
   useMarcasSmartflex,
   formatoFechaHora,
   marcarSmartflex,
+  quitarSmartflex,
   tomarOrdenPorAbrir,
   EVENTO_ABRIR_ORDEN,
 } from '@/lib/smartflex';
@@ -419,7 +420,15 @@ export default function AuditoriaClient() {
       if (h.estado === 'Programada') obs = obs.replace(/\s*Atendido por:?\s*/gi, ' atiende ').replace(/\s{2,}/g, ' ');
       obs = obs.trim();
       // Programada: fecha · técnico / observación atiende NOMBRE (sin repetir el estado)
-      if (h.estado === 'Programada') return `${fecha} · ${tecnico} / ${obs}`;
+      if (h.estado === 'Programada') {
+        // Fecha de la visita: la del comentario, la de la orden o, si no hay, la «Hora acordada» (dd-mm-aaaa o aaaa-mm-dd)
+        const ro: any = reporteOrden;
+        const crudo = String(h.fecha_programada || ro?.fecha_programada || ro?.hora_acordada || '').trim().split(/[T ]/)[0];
+        const partes = crudo.split(/[-/]/);
+        const [fd, fm, fy] = partes.length === 3 ? (partes[0].length === 4 ? [partes[2], partes[1], partes[0]] : partes) : ['', '', ''];
+        const progTxt = fy && fm && fd && !/programada para/i.test(obs) ? ` / programada para el ${fd}/${fm}/${fy}` : '';
+        return `${fecha} · ${tecnico} / ${obs}${progTxt}`;
+      }
       return `${fecha} · ${badgeLabel}${causalEntrada ? ` (${causalEntrada})` : ''} · ${tecnico} / ${obs}`;
     }
 
@@ -463,6 +472,11 @@ export default function AuditoriaClient() {
   // Botón del modal: pendiente ⇄ pasado
   const alternarSmartflex = async (h: any) => {
     if (!h?.id || !h?.smartflex) return;
+    if (h.estado === 'Efectiva' && h.smartflex === 'pasado') {
+      if (!(await quitarSmartflex(h.id))) { window.alert('No se pudo actualizar la marca de Smartflex. Intenta de nuevo.'); return; }
+      setHistorialAuditoria((prev) => prev.map((x: any) => (x.id === h.id ? { ...x, smartflex: null, smartflex_pasado_por: null, smartflex_pasado_en: null } : x)));
+      return;
+    }
     const pasar = h.smartflex === 'pendiente';
     const ok = await marcarSmartflex(h.id, pasar, user?.email);
     if (!ok) {
@@ -2449,6 +2463,11 @@ export default function AuditoriaClient() {
                                       setTimeout(() => setEntradaCopiadaIndex((prev) => (prev === i ? null : prev)), 1800);
                                       const hid = h.id as string | undefined;
                                       if (hid) setCopiadasSf((prev) => (prev.includes(hid) ? prev : [...prev, hid]));
+                                      if (hid && h.estado === 'Efectiva' && !h.smartflex) {
+                                        marcarSmartflex(hid, true, user?.email).then((ok) => {
+                                          if (ok) setHistorialAuditoria((prev) => prev.map((x: any) => (x.id === hid ? { ...x, smartflex: 'pasado', smartflex_pasado_por: user?.email ?? null, smartflex_pasado_en: new Date().toISOString() } : x)));
+                                        });
+                                      }
                                     }}
                                     style={{
                                       ...rpt.botonSecundario, flexShrink: 0, padding: '0 14px',

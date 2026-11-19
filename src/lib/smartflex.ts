@@ -79,6 +79,18 @@ export const marcarSmartflex = async (
   return true;
 };
 
+// Quita la marca por completo (smartflex = null). Se usa en las órdenes Efectivas, que no tienen estado «pendiente».
+export const quitarSmartflex = async (idHistorial: string): Promise<boolean> => {
+  const { data, error } = await supabase
+    .from('historial_ordenes')
+    .update({ smartflex: null, smartflex_pasado_por: null, smartflex_pasado_en: null })
+    .eq('id', idHistorial)
+    .select('id');
+  if (error || !data || data.length === 0) return false;
+  avisarCambioSmartflex();
+  return true;
+};
+
 // Para una lista de órdenes visibles: cuántos comentarios pendientes / pasados tiene cada una.
 export const useMarcasSmartflex = (ordenIds: string[]): Record<string, MarcaSmartflex> => {
   const [marcas, setMarcas] = useState<Record<string, MarcaSmartflex>>({});

@@ -12,6 +12,7 @@ import {
   useMarcasSmartflex,
   formatoFechaHora,
   marcarSmartflex,
+  quitarSmartflex,
   tomarOrdenPorAbrir,
   EVENTO_ABRIR_ORDEN,
 } from '@/lib/smartflex';
@@ -860,7 +861,8 @@ export default function DespachoTableClient() {
     if (observacion) texto += ` / ${observacion}`;
     if (esProgramada) {
       if (entry.atendido_por && !/atiende/i.test(observacion)) texto += ` atiende ${entry.atendido_por}`;
-      if (entry.fecha_programada && !observacion) texto += ` / programada para el ${formatearFechaPura(entry.fecha_programada)}`;
+      const fp = entry.fecha_programada || reporteOrden?.fecha_programada;
+      if (fp && !/programada para/i.test(observacion)) texto += ` / programada para el ${formatearFechaPura(fp)}`;
     } else {
       if (entry.atendido_por && !/atendido por/i.test(observacion)) texto += ` Atendido por: ${entry.atendido_por}`;
     }
@@ -1305,6 +1307,11 @@ export default function DespachoTableClient() {
   // Botón del modal: pendiente ⇄ pasado
   const alternarSmartflex = async (entry: HistorialEntry) => {
     if (!entry.id || !entry.smartflex) return;
+    if (entry.estado === 'Efectiva' && entry.smartflex === 'pasado') {
+      if (!(await quitarSmartflex(entry.id))) { toast.error('No se pudo actualizar la marca de Smartflex.'); return; }
+      setHistorial((prev) => prev.map((h) => (h.id === entry.id ? { ...h, smartflex: null, smartflex_pasado_por: null, smartflex_pasado_en: null } : h)));
+      return;
+    }
     const pasar = entry.smartflex === 'pendiente';
     const ok = await marcarSmartflex(entry.id, pasar, user?.email);
     if (!ok) {
@@ -3042,6 +3049,11 @@ export default function DespachoTableClient() {
                                           copiarTextoHistorial(entry);
                                           const eid = entry.id;
                                           if (eid) setCopiadasSf((prev) => (prev.includes(eid) ? prev : [...prev, eid]));
+                                          if (eid && entry.estado === 'Efectiva' && !entry.smartflex) {
+                                            marcarSmartflex(eid, true, user?.email).then((ok) => {
+                                              if (ok) setHistorial((prev) => prev.map((h) => (h.id === eid ? { ...h, smartflex: 'pasado', smartflex_pasado_por: user?.email ?? null, smartflex_pasado_en: new Date().toISOString() } : h)));
+                                            });
+                                          }
                                         }}
                                         style={{
                                           marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '4px',
